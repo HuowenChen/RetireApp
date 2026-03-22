@@ -209,4 +209,29 @@ if st.button("🔄 結算多帳戶最新資產總值", type="primary", use_conta
                 st.write(f"目前達成率：**{progress*100:.2f}%** (目標：${fire_goal:,.0f})")
 
             with c2:
-                st.subheader("被動現金
+                st.subheader("被動現金流佔比 (依標的與基金)")
+                df_div = pd.DataFrame(results, columns=["市場", "標的名稱", "股數", "現價", "匯率", "市值", "殖利率", "年配息"])
+                df_div = df_div[df_div['年配息'] > 0]
+                if not df_div.empty:
+                    fig = px.pie(df_div, values='年配息', names='標的名稱', hole=0.4)
+                    fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+                    st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("📋 所有資產最新明細")
+            result_df = pd.DataFrame(results, columns=["資產類別", "代號/基金名稱", "股數", "現價(原幣)", "匯率", "台幣市值(現值)", "預估殖利率", "預估年領(TWD)"])
+            
+            # 美化數字格式
+            def format_num(x):
+                try: return f"{float(x):.2f}"
+                except: return x
+            
+            result_df["現價(原幣)"] = result_df["現價(原幣)"].apply(format_num)
+            result_df["匯率"] = result_df["匯率"].apply(format_num)
+            result_df["台幣市值(現值)"] = result_df["台幣市值(現值)"].map(lambda x: f"{x:,.0f}")
+            result_df["預估殖利率"] = result_df["預估殖利率"].map(lambda x: f"{x:.2f}%")
+            result_df["預估年領(TWD)"] = result_df["預估年領(TWD)"].map(lambda x: f"{x:,.0f}")
+            
+            st.dataframe(result_df, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"計算錯誤，請確認輸入資料格式。詳細錯誤: {e}")
