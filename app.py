@@ -233,4 +233,19 @@ if st.button("🔄 結算多帳戶最新資產總值", type="primary", use_conta
                     st.plotly_chart(fig, use_container_width=True)
 
             st.subheader("📋 所有帳戶最新明細")
-            result_df = pd.DataFrame(results, columns=["資產類別", "所屬券商", "代號/基金名稱", "股數", "現價(原幣)", "匯率", "台幣市值(現
+            result_df = pd.DataFrame(results, columns=["資產類別", "所屬券商", "代號/基金名稱", "股數", "現價(原幣)", "匯率", "台幣市值(現值)", "預估殖利率", "預估年領(TWD)"])
+            
+            def format_num(x):
+                try: return f"{float(x):.2f}"
+                except: return x
+            
+            result_df["現價(原幣)"] = result_df["現價(原幣)"].apply(format_num)
+            result_df["匯率"] = result_df["匯率"].apply(format_num)
+            result_df["台幣市值(現值)"] = result_df["台幣市值(現值)"].map(lambda x: f"{x:,.0f}")
+            result_df["預估殖利率"] = result_df["預估殖利率"].map(lambda x: f"{x:.2f}%")
+            result_df["預估年領(TWD)"] = result_df["預估年領(TWD)"].map(lambda x: f"{x:,.0f}")
+            
+            st.dataframe(result_df, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"計算錯誤，請確認輸入資料格式。詳細錯誤: {e}")
