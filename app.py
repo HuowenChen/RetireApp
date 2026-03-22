@@ -169,4 +169,25 @@ if st.button("🔄 結算最新資產總值", type="primary", use_container_widt
                 st.progress(progress)
                 st.write(f"目前達成率：**{progress*100:.2f}%** (目標：${fire_goal:,.0f})")
 
-            with
+            with c2:
+                st.subheader("被動現金流佔比 (依標的)")
+                df_div = pd.DataFrame(results, columns=["市場", "代號", "股數", "現價", "匯率", "市值", "殖利率", "年股息"])
+                df_div = df_div[df_div['年股息'] > 0]
+                if not df_div.empty:
+                    fig = px.pie(df_div, values='年股息', names='代號', hole=0.4)
+                    fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+                    st.plotly_chart(fig, use_container_width=True)
+
+            # --- 詳細清單表格 ---
+            st.subheader("📋 投資組合最新明細")
+            result_df = pd.DataFrame(results, columns=["市場", "代號", "股數", "現價(原幣)", "匯率", "台幣市值(TWD)", "殖利率(%)", "預估年股息(TWD)"])
+            result_df["現價(原幣)"] = result_df["現價(原幣)"].map(lambda x: f"{x:.2f}")
+            result_df["匯率"] = result_df["匯率"].map(lambda x: f"{x:.4f}")
+            result_df["台幣市值(TWD)"] = result_df["台幣市值(TWD)"].map(lambda x: f"{x:,.0f}")
+            result_df["殖利率(%)"] = result_df["殖利率(%)"].map(lambda x: f"{x:.2f}%")
+            result_df["預估年股息(TWD)"] = result_df["預估年股息(TWD)"].map(lambda x: f"{x:,.0f}")
+            
+            st.dataframe(result_df, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"計算錯誤，請確認股票代號。詳細錯誤: {e}")
