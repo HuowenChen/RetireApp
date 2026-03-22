@@ -8,7 +8,6 @@ import json
 
 st.set_page_config(page_title="RetireFlow 退休資產戰情室", layout="wide")
 
-# --- Google Sheets 連線設定 ---
 @st.cache_resource
 def init_connection():
     creds_dict = json.loads(st.secrets["gcp_service_account"])
@@ -16,236 +15,168 @@ def init_connection():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     spreadsheet = client.open_by_url(st.secrets["sheet_url"])
-    
     sheet_stocks = spreadsheet.sheet1
-    try:
-        sheet_funds = spreadsheet.worksheet("基金帳戶")
-    except:
-        sheet_funds = spreadsheet.add_worksheet(title="基金帳戶", rows="100", cols="20")
-        
+    try: sheet_funds = spreadsheet.worksheet("基金帳戶")
+    except: sheet_funds = spreadsheet.add_worksheet(title="基金帳戶", rows="100", cols="20")
     return sheet_stocks, sheet_funds
 
 try:
     sheet_stocks, sheet_funds = init_connection()
 except Exception as e:
-    st.error(f"無法連線至 Google 試算表，請檢查 Secrets 設定。錯誤訊息: {e}")
+    st.error(f"連線失敗: {e}")
     st.stop()
 
-# --- 讀取資料的函數 ---
 def load_stocks():
     try:
         records = sheet_stocks.get_all_records()
-        if not records: 
-            return pd.DataFrame({"市場": ["台股", "美股", "日股"], "券商": ["元大證券", "Firstrade", "富邦複委託"], "代號": ["2330", "VT", "7203"], "股數": [1000, 50, 100], "預估殖利率(%)": [1.5, 2.0, 3.0]})
+        if not records: return pd.DataFrame(columns=["市場", "券商", "代號", "股數", "預估殖利率(%)"])
         df = pd.DataFrame(records)
-        
-        # 🌟 自動相容舊版：如果沒有券商或殖利率欄位，自動補上
         if "券商" not in df.columns: df.insert(1, "券商", "未指定")
         if "預估殖利率(%)" not in df.columns: df["預估殖利率(%)"] = 4.0
-        
         df["代號"] = df["代號"].astype(str)
         df["代號"] = df.apply(lambda row: str(row["代號"]).zfill(4) if row["市場"] == "台股" and len(str(row["代號"])) < 4 else str(row["代號"]), axis=1)
         return df
-    except:
-        return pd.DataFrame(columns=["市場", "券商", "代號", "股數", "預估殖利率(%)"])
+    except: return pd.DataFrame(columns=["市場", "券商", "代號", "股數", "預估殖利率(%)"])
 
 def load_funds():
     try:
         records = sheet_funds.get_all_records()
-        if not records:
-            return pd.DataFrame({"基金名稱": ["安聯收益成長基金", "元大台灣高股息優質龍頭基金"], "券商/平台": ["基富通", "國泰世華"], "目前總額(TWD)": [500000, 300000], "預估殖利率(%)": [8.0, 5.0]})
+        if not records: return pd.DataFrame(columns=["基金名稱", "券商/平台", "目前總額(TWD)", "預估殖利率(%)"])
         df = pd.DataFrame(records)
         if "券商/平台" not in df.columns: df.insert(1, "券商/平台", "未指定")
         return df
-    except:
-        return pd.DataFrame(columns=["基金名稱", "券商/平台", "目前總額(TWD)", "預估殖利率(%)"])
+    except: return pd.DataFrame(columns=["基金名稱", "券商/平台", "目前總額(TWD)", "預估殖利率(%)"])
 
-# --- 儲存資料的函數 ---
 def save_all_data(df_stocks, df_funds):
     try:
         sheet_stocks.clear() 
         sheet_stocks.update(values=[df_stocks.columns.values.tolist()] + df_stocks.values.tolist(), range_name="A1")
-        
         sheet_funds.clear()
         sheet_funds.update(values=[df_funds.columns.values.tolist()] + df_funds.values.tolist(), range_name="A1")
         return True
-    except Exception as e:
-        st.error(f"儲存失敗: {e}")
-        return False
+    except: return False
 
-# --- 側邊欄 ---
 st.sidebar.header("🎯 退休目標設定")
 fire_goal = st.sidebar.number_input("目標總資產 (TWD)", value=20000000, step=1000000)
-monthly_expense = st.sidebar.number_input("退休後預估每月花費 (TWD)", value=50000, step=5000)
+monthly_expense = st.sidebar.number_input("預估每月花費 (TWD)", value=50000, step=5000)
 
 st.title("📊 RetireFlow 退休戰情室")
-st.markdown("### 多券商與跨市場資產整合系統")
+st.markdown("### 跨券商集中管理大廳")
 
 df_all_stocks = load_stocks()
 df_funds = load_funds()
 
-# --- 🌟 券商分頁設計 ---
-tab1, tab2, tab3, tab4 = st.tabs(["🇹🇼 台股帳戶", "🇺🇸 美股帳戶", "🇯🇵 日股帳戶", "📈 基金總額管理"])
-
-# 定義股票表格的共用格式設定
+tab1, tab2, tab3, tab4 = st.tabs(["🇹🇼 台股", "🇺🇸 美股", "🇯🇵 日股", "📈 基金"])
 stock_col_config = {
     "市場": st.column_config.SelectboxColumn("市場", options=["台股", "美股", "日股"], required=True),
-    "券商": st.column_config.TextColumn("所屬券商 (例: 元大, 嘉信)", required=True),
+    "券商": st.column_config.TextColumn("所屬券商", required=True),
     "代號": st.column_config.TextColumn("代號", required=True),
     "股數": st.column_config.NumberColumn("持股數量", min_value=0, required=True),
-    "預估殖利率(%)": st.column_config.NumberColumn("預估殖利率(%)", min_value=0.0, format="%.2f", required=True)
+    "預估殖利率(%)": st.column_config.NumberColumn("殖利率(%)", min_value=0.0, format="%.2f", required=True)
 }
 
 with tab1:
-    st.info("💡 **台股部位：** 您可填入不同券商（如：富邦、國泰）來分類您的台股。")
     df_tw = df_all_stocks[df_all_stocks["市場"] == "台股"].copy()
-    edited_tw = st.data_editor(df_tw, num_rows="dynamic", use_container_width=True, column_config=stock_col_config, key="tw_editor")
-
+    edited_tw = st.data_editor(df_tw, num_rows="dynamic", use_container_width=True, column_config=stock_col_config, key="tw")
 with tab2:
-    st.info("💡 **美股部位：** 您可填入海外券商（如 Firstrade）或國內複委託。")
     df_us = df_all_stocks[df_all_stocks["市場"] == "美股"].copy()
-    edited_us = st.data_editor(df_us, num_rows="dynamic", use_container_width=True, column_config=stock_col_config, key="us_editor")
-
+    edited_us = st.data_editor(df_us, num_rows="dynamic", use_container_width=True, column_config=stock_col_config, key="us")
 with tab3:
-    st.info("💡 **日股部位：** 管理您的日股複委託帳戶。")
     df_jp = df_all_stocks[df_all_stocks["市場"] == "日股"].copy()
-    edited_jp = st.data_editor(df_jp, num_rows="dynamic", use_container_width=True, column_config=stock_col_config, key="jp_editor")
-
+    edited_jp = st.data_editor(df_jp, num_rows="dynamic", use_container_width=True, column_config=stock_col_config, key="jp")
 with tab4:
-    st.info("💡 **基金帳戶：** 填入基金平台或銀行帳戶名稱。")
-    edited_funds = st.data_editor(
-        df_funds, 
-        num_rows="dynamic", 
-        use_container_width=True, 
-        column_config={"券商/平台": st.column_config.TextColumn("平台名稱", required=True)},
-        key="funds_editor"
-    )
+    edited_funds = st.data_editor(df_funds, num_rows="dynamic", use_container_width=True, column_config={"券商/平台": st.column_config.TextColumn("所屬券商", required=True)}, key="funds")
 
-st.markdown("<br>", unsafe_allow_html=True)
-if st.button("💾 將所有帳戶的變更儲存至雲端", type="secondary", use_container_width=True):
-    with st.spinner("正在同步至 Google 試算表..."):
-        edited_tw["市場"] = "台股"
-        edited_us["市場"] = "美股"
-        edited_jp["市場"] = "日股"
+if st.button("💾 儲存所有券商變更至雲端", type="secondary", use_container_width=True):
+    with st.spinner("同步中..."):
+        edited_tw["市場"], edited_us["市場"], edited_jp["市場"] = "台股", "美股", "日股"
         merged_stocks = pd.concat([edited_tw, edited_us, edited_jp], ignore_index=True)
-        
-        if save_all_data(merged_stocks, edited_funds):
-            st.success("✅ 所有市場與券商資料皆已同步成功！")
+        if save_all_data(merged_stocks, edited_funds): st.success("✅ 同步成功！")
 
-# --- 抓價邏輯 ---
 @st.cache_data(ttl=600)
 def get_market_data(portfolio_df):
     market_dict = {}
-    tickers_to_fetch = []
-    for index, row in portfolio_df.iterrows():
-        market = row["市場"]
-        symbol = str(row["代號"]).upper().strip()
-        if market == "台股": tickers_to_fetch.append(f"{symbol}.TW")
-        elif market == "日股": tickers_to_fetch.append(f"{symbol}.T")
-        else: tickers_to_fetch.append(symbol)
-
+    tickers_to_fetch = [f"{str(row['代號']).upper().strip()}.TW" if row["市場"]=="台股" else f"{str(row['代號']).upper().strip()}.T" if row["市場"]=="日股" else str(row['代號']).upper().strip() for _, row in portfolio_df.iterrows()]
     for t in set(tickers_to_fetch):
-        try:
-            hist = yf.Ticker(t).history(period="5d")
-            market_dict[t] = float(hist['Close'].iloc[-1]) if not hist.empty else 0.0
+        try: market_dict[t] = float(yf.Ticker(t).history(period="5d")['Close'].iloc[-1])
         except: market_dict[t] = 0.0
-
     try: usd_twd = float(yf.Ticker("TWD=X").history(period="5d")['Close'].iloc[-1])
     except: usd_twd = 32.0
-
     try: jpy_twd = float(yf.Ticker("JPYTWD=X").history(period="5d")['Close'].iloc[-1])
-    except:
-        try: jpy_twd = (1 / float(yf.Ticker("JPY=X").history(period="5d")['Close'].iloc[-1])) * usd_twd
-        except: jpy_twd = 0.22
-
+    except: jpy_twd = 0.22
     return market_dict, usd_twd, jpy_twd
 
 st.markdown("---")
 
-# --- 結算與顯示 ---
-if st.button("🔄 結算多帳戶最新資產總值", type="primary", use_container_width=True):
-    with st.spinner('正在連線交易所並彙整券商資料...'):
+if st.button("🔄 結算全球帳戶總值", type="primary", use_container_width=True):
+    with st.spinner('彙整各券商資料中...'):
         try:
             merged_stocks = pd.concat([edited_tw, edited_us, edited_jp], ignore_index=True)
             market_data, usd_twd, jpy_twd = get_market_data(merged_stocks)
             
-            results = []
+            raw_data = []
             total_value = 0
-            total_annual_dividend = 0
             
-            # 1. 股票部位計算
-            for index, row in merged_stocks.iterrows():
-                market = row["市場"]
-                broker = str(row.get("券商", "未指定"))
-                symbol = str(row["代號"]).upper().strip()
-                shares = row["股數"]
-                yield_pct = float(row.get("預估殖利率(%)", 0)) / 100.0
-                
+            for _, row in merged_stocks.iterrows():
+                market, broker, symbol, shares, yield_pct = row["市場"], str(row.get("券商", "未指定")), str(row["代號"]).upper().strip(), row["股數"], float(row.get("預估殖利率(%)", 0))/100.0
                 if market == "台股": price, fx = market_data.get(f"{symbol}.TW", 0.0), 1.0
                 elif market == "美股": price, fx = market_data.get(symbol, 0.0), usd_twd
                 elif market == "日股": price, fx = market_data.get(f"{symbol}.T", 0.0), jpy_twd
                 
                 value_twd = price * shares * fx
                 dividend_twd = value_twd * yield_pct
-                
                 total_value += value_twd
-                total_annual_dividend += dividend_twd
-                results.append([market, broker, symbol, shares, price, fx, value_twd, yield_pct*100, dividend_twd])
+                raw_data.append([market, broker, symbol, shares, price, fx, value_twd, yield_pct, dividend_twd])
 
-            # 2. 基金部位計算
-            for index, row in edited_funds.iterrows():
-                fund_name = row["基金名稱"]
-                broker = str(row.get("券商/平台", "未指定"))
-                fund_value = float(row["目前總額(TWD)"])
-                yield_pct = float(row.get("預估殖利率(%)", 0)) / 100.0
-                
+            for _, row in edited_funds.iterrows():
+                broker, fund_name, fund_value, yield_pct = str(row.get("券商/平台", "未指定")), row["基金名稱"], float(row["目前總額(TWD)"]), float(row.get("預估殖利率(%)", 0))/100.0
                 dividend_twd = fund_value * yield_pct
                 total_value += fund_value
-                total_annual_dividend += dividend_twd
-                results.append(["基金", broker, fund_name, "-", "-", "-", fund_value, yield_pct*100, dividend_twd])
+                raw_data.append(["基金", broker, fund_name, "-", "-", "-", fund_value, yield_pct, dividend_twd])
 
+            df_raw = pd.DataFrame(raw_data, columns=["市場", "券商", "標的", "股數", "現價", "匯率", "市值", "殖利率", "年配息"])
+            total_annual_dividend = df_raw["年配息"].sum()
             monthly_dividend = total_annual_dividend / 12
             
-            st.subheader("💰 資產與現金流摘要")
+            st.subheader("💰 總資產與現金流")
             col1, col2, col3 = st.columns(3)
-            col1.metric("總資產現值 (TWD)", f"${total_value:,.0f}")
-            col2.metric("預估年領被動收入 (TWD)", f"${total_annual_dividend:,.0f}")
-            col3.metric("平均每月被動收入", f"${monthly_dividend:,.0f}", 
-                        f"目標缺口: ${monthly_expense - monthly_dividend:,.0f}" if monthly_expense > monthly_dividend else "✅ 已達財務自由")
+            col1.metric("全球總資產 (TWD)", f"${total_value:,.0f}")
+            col2.metric("年領被動收入 (TWD)", f"${total_annual_dividend:,.0f}")
+            col3.metric("平均每月被動收入", f"${monthly_dividend:,.0f}", f"距離目標: ${monthly_expense - monthly_dividend:,.0f}" if monthly_expense > monthly_dividend else "✅ 已達標")
             
             st.markdown("---")
 
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                st.subheader("🚀 總資產目標進度")
-                progress = min(total_value / fire_goal, 1.0) if fire_goal > 0 else 1.0
-                st.progress(progress)
-                st.write(f"目前達成率：**{progress*100:.2f}%** (目標：${fire_goal:,.0f})")
+            # 🌟 全新模組：券商集中管理面板
+            st.subheader("🏦 各券商/平台 集中管理總覽")
+            st.info("此表格將您分散在台、美、日股及基金的資金，依據「券商帳戶」進行自動合併計算。")
+            
+            broker_summary = df_raw.groupby("券商").agg({"市值": "sum", "年配息": "sum"}).reset_index()
+            broker_summary = broker_summary.sort_values(by="市值", ascending=False)
+            broker_summary["資產佔比"] = (broker_summary["市值"] / total_value) * 100 if total_value > 0 else 0
 
-            with c2:
-                # 改為用「券商」來畫圓餅圖，看看資金集中在哪個帳戶
-                st.subheader("資產分佈佔比 (依券商/平台)")
-                df_broker = pd.DataFrame(results, columns=["市場", "券商", "標的名稱", "股數", "現價", "匯率", "市值", "殖利率", "年配息"])
-                df_broker_grouped = df_broker.groupby("券商")["市值"].sum().reset_index()
-                if not df_broker_grouped.empty and df_broker_grouped["市值"].sum() > 0:
-                    fig = px.pie(df_broker_grouped, values='市值', names='券商', hole=0.4)
+            # 格式化顯示
+            display_broker = broker_summary.copy()
+            display_broker["市值"] = display_broker["市值"].map(lambda x: f"${x:,.0f}")
+            display_broker["年配息"] = display_broker["年配息"].map(lambda x: f"${x:,.0f}")
+            display_broker["資產佔比"] = display_broker["資產佔比"].map(lambda x: f"{x:.1f}%")
+            
+            col_b1, col_b2 = st.columns([2, 1])
+            with col_b1:
+                st.dataframe(display_broker, use_container_width=True)
+            with col_b2:
+                if not broker_summary.empty and broker_summary["市值"].sum() > 0:
+                    fig = px.pie(broker_summary, values='市值', names='券商', hole=0.4)
                     fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
                     st.plotly_chart(fig, use_container_width=True)
 
-            st.subheader("📋 所有帳戶最新明細")
-            result_df = pd.DataFrame(results, columns=["資產類別", "所屬券商", "代號/基金名稱", "股數", "現價(原幣)", "匯率", "台幣市值(現值)", "預估殖利率", "預估年領(TWD)"])
-            
-            def format_num(x):
-                try: return f"{float(x):.2f}"
-                except: return x
-            
-            result_df["現價(原幣)"] = result_df["現價(原幣)"].apply(format_num)
-            result_df["匯率"] = result_df["匯率"].apply(format_num)
-            result_df["台幣市值(現值)"] = result_df["台幣市值(現值)"].map(lambda x: f"{x:,.0f}")
-            result_df["預估殖利率"] = result_df["預估殖利率"].map(lambda x: f"{x:.2f}%")
-            result_df["預估年領(TWD)"] = result_df["預估年領(TWD)"].map(lambda x: f"{x:,.0f}")
-            
-            st.dataframe(result_df, use_container_width=True)
+            st.markdown("---")
+            st.subheader("📋 標的明細清單")
+            df_display = df_raw.copy()
+            df_display["現價"] = df_display["現價"].apply(lambda x: f"{float(x):.2f}" if x != "-" else x)
+            df_display["市值"] = df_display["市值"].map(lambda x: f"{x:,.0f}")
+            df_display["殖利率"] = df_display["殖利率"].map(lambda x: f"{x*100:.2f}%")
+            df_display["年配息"] = df_display["年配息"].map(lambda x: f"{x:,.0f}")
+            st.dataframe(df_display, use_container_width=True)
 
         except Exception as e:
-            st.error(f"計算錯誤，請確認輸入資料格式。詳細錯誤: {e}")
+            st.error(f"計算錯誤: {e}")
