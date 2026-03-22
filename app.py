@@ -31,12 +31,20 @@ except Exception as e:
     st.stop()
 
 # --- 讀寫資料的函數 ---
+# --- 讀寫資料的函數 ---
 def load_data():
     try:
         records = sheet.get_all_records()
         if not records: # 如果表單是空的，給預設值
             return pd.DataFrame({"市場": ["台股", "台股", "美股", "日股"], "代號": ["2330", "0050", "VT", "7203"], "股數": [1000, 2000, 50, 100]})
-        return pd.DataFrame(records)
+        
+        df = pd.DataFrame(records)
+        # 🌟 關鍵修復：強制把「代號」欄位轉成純文字，解除表格鎖定！
+        df["代號"] = df["代號"].astype(str) 
+        # 針對被 Google 表單吃掉 0 的台股代號 (長度若為 2~3 碼則自動補 0)
+        df["代號"] = df.apply(lambda row: str(row["代號"]).zfill(4) if row["市場"] == "台股" and len(str(row["代號"])) < 4 else str(row["代號"]), axis=1)
+        
+        return df
     except Exception as e:
         st.error(f"讀取資料失敗: {e}")
         return pd.DataFrame(columns=["市場", "代號", "股數"])
