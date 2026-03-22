@@ -2,39 +2,65 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
-import os # 新增：用來檢查檔案是否存在的內建工具
+import gspread
+from google.oauth2.service_account import Credentials
+import json
 
 st.set_page_config(page_title="RetireFlow 退休資產戰情室", layout="wide")
 
-# --- 檔案儲存設定 ---
-DATA_FILE = "portfolio.csv" # 我們的資料庫檔名
+# --- Google Sheets 連線設定 ---
+@st.cache_resource
+def init_connection():
+    # 讀取剛剛藏在 Secrets 裡的 JSON 憑證
+    creds_dict = json.loads(st.secrets["gcp_service_account"])
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    # 打開試算表
+    sheet = client.open_by_url(st.secrets["sheet_url"]).sheet1
+    return sheet
 
-# 載入資料的函數
+# 取得試算表實體
+try:
+    sheet = init_connection()
+except Exception as e:
+    st.error(f"無法連線至 Google 試算表，請檢查 Secrets 設定。錯誤訊息: {e}")
+    st.stop()
+
+# --- 讀寫資料的函數 ---
 def load_data():
-    if os.path.exists(DATA_FILE):
-        # 如果檔案存在，就讀取它
-        return pd.read_csv(DATA_FILE)
-    else:
-        # 如果是第一次用（沒有檔案），就給預設值
-        return pd.DataFrame({
-            "市場": ["永豐", "玉山","台股", "美股", "日股"],
-            "代號": ["2330", "0050", "VT", "7203"],
-            "股數": [1000, 2000, 50, 100]
-        })
+    try:
+        records = sheet.get_all_records()
+        if not records: # 如果表單是空的，給預設值
+            return pd.DataFrame({"市場": ["台股", "台股", "美股", "日股"], "代號": ["2330", "0050", "VT", "7203"], "股數": [1000, 2000, 50, 100]})
+        return pd.DataFrame(records)
+    except Exception as e:
+        st.error(f"讀取資料失敗: {e}")
+        return pd.DataFrame(columns=["市場", "代號", "股數"])
 
-# 儲存資料的函數
 def save_data(df):
-    df.to_csv(DATA_FILE, index=False) # 存成 csv 檔，不保留索引號碼
+    try:
+        sheet.clear() # 先清空舊資料
+        # 把 dataframe 轉換成 list 寫入
+        data_to_write = [df.columns.values.tolist()] + df.values.tolist()
+        sheet.update(values=data_to_write, range_name="A1")
+        return True
+    except Exception as e:
+        st.error(f"儲存資料失敗: {e}")
+        return False
 
 # --- 側邊欄：設定退休目標 ---
 st.sidebar.header("🎯 退休目標設定")
 fire_goal = st.sidebar.number_input("目標資產 (TWD)", value=20000000, step=1000000)
 
 # --- 主畫面：持股清單編輯器 ---
-st.title("📊 RetireFlow 退休資產戰情室 (自動存檔版)")
+st.title("📊 RetireFlow 退休戰情室 (雲端同步版)")
 st.markdown("### 跨市場複委託管理系統")
 
-st.info("💡 **操作提示：** 在下方表格修改完持股後，請記得點擊「💾 儲存清單」，下次打開就不必重填囉！")
+st.info("💡 **操作提示：** 下方表格已與您的 Google 試算表即時連動！修改後請點擊「💾 儲存至雲端」。")
 
 # 讀取現有資料
 current_portfolio = load_data()
@@ -51,10 +77,11 @@ edited_portfolio = st.data_editor(
     }
 )
 
-# --- 新增：儲存按鈕 ---
-if st.button("💾 儲存目前的持股清單"):
-    save_data(edited_portfolio)
-    st.success("✅ 儲存成功！這份清單已經安穩地存在你的電腦裡了。")
+# --- 儲存按鈕 ---
+if st.button("💾 儲存至雲端 (Google Sheets)"):
+    with st.spinner("正在同步至 Google 試算表..."):
+        if save_data(edited_portfolio):
+            st.success("✅ 同步成功！您現在可以隨時隨地用手機查看最新資產了。")
 
 # --- 核心邏輯：轉換代號並抓取資料 ---
 @st.cache_data(ttl=600)
@@ -85,7 +112,7 @@ st.markdown("---")
 
 # --- 結算按鈕 ---
 if st.button("🔄 結算最新資產總值", type="primary", use_container_width=True):
-    with st.spinner('正在連線至全球交易所抓取最新報價... (可能需要幾秒鐘)'):
+    with st.spinner('正在連線至全球交易所抓取最新報價...'):
         try:
             market_data, usd_twd, jpy_twd = get_market_data(edited_portfolio)
             
@@ -149,13 +176,10 @@ if st.button("🔄 結算最新資產總值", type="primary", use_container_widt
             # --- 詳細清單表格 ---
             st.subheader("📋 投資組合最新明細")
             result_df = pd.DataFrame(results, columns=["市場", "代號", "股數", "現價(原幣)", "匯率", "台幣市值(TWD)"])
-            
-            # 格式化數字顯示
             result_df["現價(原幣)"] = result_df["現價(原幣)"].map(lambda x: f"{x:.2f}")
             result_df["匯率"] = result_df["匯率"].map(lambda x: f"{x:.4f}")
             result_df["台幣市值(TWD)"] = result_df["台幣市值(TWD)"].map(lambda x: f"{x:,.0f}")
-            
             st.dataframe(result_df, use_container_width=True)
 
         except Exception as e:
-            st.error(f"資料計算發生錯誤，請確認輸入的股票代號是否皆正確。詳細錯誤: {e}")
+            st.error(f"計算錯誤，請確認股票代號。詳細錯誤: {e}")
