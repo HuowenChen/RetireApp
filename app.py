@@ -248,3 +248,68 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                 broker_summary = df_raw.groupby("券商").agg({"市值(TWD)": "sum"}).reset_index()
                 if not broker_summary.empty and broker_summary["市值(TWD)"].sum() > 0:
                     fig_broker = px.pie(broker_summary, values='市值(TWD)', names='券商', hole=0.4, title="依券商/平台")
+                    fig_broker.update_layout(margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='rgba(0,0,0,0)')
+                    st.plotly_chart(fig_broker, use_container_width=True)
+
+            st.markdown("---")
+            
+            df_hist_plot = load_history()
+            if not df_hist_plot.empty and len(df_hist_plot) > 0 and "淨資產(TWD)" in df_hist_plot.columns:
+                st.subheader("📈 淨資產成長趨勢 (已扣除負債)")
+                fig_line = px.line(df_hist_plot, x="紀錄日期", y=["總資產(TWD)", "淨資產(TWD)", "總負債(TWD)"], markers=True,
+                                   color_discrete_map={"總資產(TWD)": "#1f77b4", "淨資產(TWD)": "#00FF7F", "總負債(TWD)": "#ff7f0e"})
+                fig_line.update_layout(margin=dict(t=20, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', legend_title_text='')
+                st.plotly_chart(fig_line, use_container_width=True)
+                st.markdown("---")
+            
+            st.subheader("🚀 淨資產 1.2 億 FIRE 目標進度")
+            progress = min(max(net_worth / fire_goal, 0), 1.0) if fire_goal > 0 else 1.0
+            st.progress(progress)
+            st.write(f"目前達成率：**{progress*100:.2f}%** (目標：${fire_goal:,.0f})")
+            st.markdown("---")
+
+            # --- 分頁與柏拉圖模組 ---
+            st.subheader("📋 各市場資產明細與柏拉圖 (Pareto)")
+            tab_tw, tab_us, tab_jp, tab_fund, tab_liab = st.tabs(["🇹🇼 台股部位", "🇺🇸 美股部位", "🇯🇵 日股部位", "📈 基金部位", "📉 負債清單"])
+            
+            def render_market_tab(market_name, df_market):
+                if df_market.empty:
+                    st.info(f"目前尚無{market_name}資料。")
+                    return
+                
+                subtotal = df_market["市值(TWD)"].sum()
+                st.markdown(f"**{market_name} 總計：** `${subtotal:,.0f}` TWD")
+                
+                df_plot = df_market.groupby("標的名稱")["市值(TWD)"].sum().reset_index().sort_values(by="市值(TWD)", ascending=False)
+                df_plot['標的名稱'] = df_plot['標的名稱'].astype(str)
+                
+                fig_bar = px.bar(df_plot, x='標的名稱', y='市值(TWD)', title=f"{market_name} 各股資金佔比")
+                fig_bar.update_xaxes(type='category')
+                fig_bar.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig_bar, use_container_width=True)
+                
+                df_display = df_market.copy()
+                df_display["現價"] = df_display["現價"].apply(lambda x: f"{float(x):.2f}" if x != "-" else x)
+                df_display["市值(TWD)"] = df_display["市值(TWD)"].map(lambda x: f"{x:,.0f}")
+                df_display["殖利率"] = df_display["殖利率"].map(lambda x: f"{x*100:.2f}%")
+                df_display["年配息(TWD)"] = df_display["年配息(TWD)"].map(lambda x: f"{x:,.0f}")
+                st.dataframe(df_display, use_container_width=True)
+
+            with tab_tw: render_market_tab("台股", df_raw[df_raw["市場"] == "台股"])
+            with tab_us: render_market_tab("美股", df_raw[df_raw["市場"] == "美股"])
+            with tab_jp: render_market_tab("日股", df_raw[df_raw["市場"] == "日股"])
+            with tab_fund: render_market_tab("基金", df_raw[df_raw["市場"] == "基金"])
+            
+            with tab_liab:
+                st.info("📉 您的負債清單")
+                if not df_liab.empty:
+                    st.markdown(f"**負債總計：** `${total_liabilities:,.0f}` TWD")
+                    df_liab_display = df_liab.copy()
+                    df_liab_display["目前餘額(TWD)"] = df_liab_display["目前餘額(TWD)"].map(lambda x: f"{x:,.0f}")
+                    st.dataframe(df_liab_display, use_container_width=True)
+                else:
+                    st.success("太棒了！您目前沒有任何負債。")
+
+        # 👇 就是這一行！請確保您有複製到檔案的最底端 👇
+        except Exception as e:
+            st.error(f"計算發生錯誤。詳細錯誤: {e}")
