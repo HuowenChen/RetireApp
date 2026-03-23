@@ -6,8 +6,9 @@ import gspread
 from google.oauth2.service_account import Credentials
 import json
 import os
+from datetime import datetime, timezone, timedelta
 
-# --- 🌟 自動設定深色模式 (Dark Mode) ---
+# --- 🌟 自動設定深色模式 ---
 os.makedirs(".streamlit", exist_ok=True)
 config_path = ".streamlit/config.toml"
 dark_theme_config = "[theme]\nbase='dark'\n"
@@ -25,18 +26,26 @@ def init_connection():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     spreadsheet = client.open_by_url(st.secrets["sheet_url"])
+    
     sheet_stocks = spreadsheet.sheet1
     try: sheet_funds = spreadsheet.worksheet("基金帳戶")
     except: sheet_funds = spreadsheet.add_worksheet(title="基金帳戶", rows="100", cols="20")
-    return sheet_stocks, sheet_funds
+    
+    # 🌟 新增：自動建立「資產歷史紀錄」分頁
+    try: sheet_history = spreadsheet.worksheet("資產歷史紀錄")
+    except: 
+        sheet_history = spreadsheet.add_worksheet(title="資產歷史紀錄", rows="1000", cols="5")
+        sheet_history.append_row(["紀錄日期", "全球總資產(TWD)", "預估年領股息(TWD)"])
+        
+    return sheet_stocks, sheet_funds, sheet_history
 
 try:
-    sheet_stocks, sheet_funds = init_connection()
+    sheet_stocks, sheet_funds, sheet_history = init_connection()
 except Exception as e:
     st.error(f"連線失敗: {e}")
     st.stop()
 
-# --- 讀取資料 (唯讀) ---
+# --- 讀取資料 ---
 def load_data_from_sheets():
     raw_stocks = sheet_stocks.get_all_values()
     if len(raw_stocks) > 1:
@@ -60,12 +69,20 @@ def load_data_from_sheets():
         
     return df_stocks, df_funds
 
-# --- 🌟 全新升級：批次下載與快取引擎 (解決 Rate Limit 問題) ---
+def load_history():
+    try:
+        raw_hist = sheet_history.get_all_values()
+        if len(raw_hist) > 1:
+            df_hist = pd.DataFrame(raw_hist[1:], columns=raw_hist[0])
+            df_hist["全球總資產(TWD)"] = pd.to_numeric(df_hist["全球總資產(TWD)"], errors='coerce').fillna(0)
+            return df_hist
+        return pd.DataFrame()
+    except: return pd.DataFrame()
+
+# --- 批次下載引擎 ---
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_market_data_batched(df_stocks):
     market_data = {}
-    
-    # 1. 整理所有要抓的標準代號 (包含匯率)
     tickers_primary = ["TWD=X", "JPYTWD=X"]
     for _, row in df_stocks.iterrows():
         sym = str(row["代號"]).upper().strip()
@@ -75,7 +92,6 @@ def fetch_market_data_batched(df_stocks):
             
     tickers_primary = list(set(tickers_primary))
 
-    # 2. 第一次批次抓取 (只發送 1 次請求)
     if tickers_primary:
         try:
             data = yf.download(tickers_primary, period="5d", ignore_tz=True)
@@ -85,12 +101,9 @@ def fetch_market_data_batched(df_stocks):
                     try:
                         val = close_data[t].iloc[-1] if isinstance(close_data, pd.DataFrame) else close_data.iloc[-1]
                         market_data[t] = float(val) if pd.notna(val) else 0.0
-                    except:
-                        market_data[t] = 0.0
-        except Exception as e:
-            print(f"Primary batch failed: {e}")
+                    except: market_data[t] = 0.0
+        except Exception as e: print(f"Primary batch failed: {e}")
 
-    # 3. 找出抓失敗的台股，自動轉換為上櫃 (.TWO) 進行第二次批次抓取
     tickers_otc = []
     for _, row in df_stocks.iterrows():
         if row["市場"] == "台股":
@@ -108,32 +121,26 @@ def fetch_market_data_batched(df_stocks):
                     try:
                         val = close_otc[t].iloc[-1] if isinstance(close_otc, pd.DataFrame) else close_otc.iloc[-1]
                         market_data[t] = float(val) if pd.notna(val) else 0.0
-                    except:
-                        market_data[t] = 0.0
-        except Exception as e:
-            print(f"OTC batch failed: {e}")
+                    except: market_data[t] = 0.0
+        except Exception as e: print(f"OTC batch failed: {e}")
 
     return market_data
 
-# --- 側邊欄與主畫面 ---
+# --- 側邊欄 ---
 st.sidebar.header("🎯 退休目標設定")
 fire_goal = st.sidebar.number_input("目標總資產 (TWD)", value=120000000, step=10000000)
 monthly_expense = st.sidebar.number_input("預估每月花費 (TWD)", value=250000, step=10000)
 
 st.title("📊 RetireFlow 退休戰情室")
-st.markdown("### 跨券商集中管理大廳")
-st.info("💡 **唯讀同步模式**：請在您的 Google 試算表中維護持股，修改完成後點擊下方按鈕進行結算。")
+st.info("💡 **操作提示**：請在您的 Google 試算表中維護持股與基金，修改完成後點擊下方按鈕結算。")
 
-# --- 核心邏輯 ---
+# --- 核心結算邏輯 ---
 if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", use_container_width=True):
-    with st.spinner('透過批次引擎高速抓取全球報價中...'):
+    with st.spinner('連線結算中，並記錄今日資產狀態...'):
         try:
             df_stocks, df_funds = load_data_from_sheets()
-            
-            # 呼叫快取版的批次抓價引擎
             market_data = fetch_market_data_batched(df_stocks)
             
-            # 提取匯率
             usd_twd = market_data.get("TWD=X", 32.0)
             if usd_twd == 0.0: usd_twd = 32.0
             jpy_twd = market_data.get("JPYTWD=X", 0.22)
@@ -147,14 +154,9 @@ if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", u
                 
                 price = 0.0
                 fx = 1.0
-                if market == "台股":
-                    price = market_data.get(f"{symbol}.TW", market_data.get(f"{symbol}.TWO", 0.0))
-                elif market == "美股":
-                    price = market_data.get(symbol, 0.0)
-                    fx = usd_twd
-                elif market == "日股":
-                    price = market_data.get(f"{symbol}.T", 0.0)
-                    fx = jpy_twd
+                if market == "台股": price = market_data.get(f"{symbol}.TW", market_data.get(f"{symbol}.TWO", 0.0))
+                elif market == "美股": price, fx = market_data.get(symbol, 0.0), usd_twd
+                elif market == "日股": price, fx = market_data.get(f"{symbol}.T", 0.0), jpy_twd
                     
                 value_twd = price * shares * fx
                 dividend_twd = value_twd * yield_pct
@@ -171,6 +173,22 @@ if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", u
             total_annual_dividend = df_raw["年配息"].sum()
             monthly_dividend = total_annual_dividend / 12
             
+            # 🌟 自動將結算結果寫入「資產歷史紀錄」分頁
+            tz_tw = timezone(timedelta(hours=8))
+            today_str = datetime.now(tz_tw).strftime("%Y-%m-%d")
+            
+            try:
+                hist_records = sheet_history.get_all_values()
+                # 如果最後一筆紀錄的日期就是今天，則直接覆蓋那一列；否則新增一列
+                if len(hist_records) > 1 and hist_records[-1][0] == today_str:
+                    row_idx = len(hist_records)
+                    sheet_history.update(values=[[today_str, float(total_value), float(total_annual_dividend)]], range_name=f"A{row_idx}:C{row_idx}")
+                else:
+                    sheet_history.append_row([today_str, float(total_value), float(total_annual_dividend)])
+            except Exception as e:
+                st.warning(f"歷史紀錄寫入失敗，但仍可顯示當前資產: {e}")
+
+            # --- 畫面顯示區 ---
             st.subheader("💰 總資產與現金流")
             col1, col2, col3 = st.columns(3)
             col1.metric("全球總資產 (TWD)", f"${total_value:,.0f}")
@@ -178,6 +196,16 @@ if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", u
             col3.metric("平均每月被動收入", f"${monthly_dividend:,.0f}", f"距離目標: ${monthly_expense - monthly_dividend:,.0f}" if monthly_expense > monthly_dividend else "✅ 已達標")
             
             st.markdown("---")
+            
+            # 🌟 繪製資產成長趨勢圖
+            df_hist_plot = load_history()
+            if not df_hist_plot.empty and len(df_hist_plot) > 0:
+                st.subheader("📈 資產成長趨勢 (歷史軌跡)")
+                fig_line = px.line(df_hist_plot, x="紀錄日期", y="全球總資產(TWD)", markers=True, 
+                                   color_discrete_sequence=['#00FF7F']) # 螢光綠色折線，搭配黑色主題非常帥
+                fig_line.update_layout(margin=dict(t=20, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig_line, use_container_width=True)
+                st.markdown("---")
             
             c1, c2 = st.columns([1, 1])
             with c1:
@@ -191,7 +219,7 @@ if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", u
                 broker_summary = df_raw.groupby("券商").agg({"市值": "sum"}).reset_index()
                 if not broker_summary.empty and broker_summary["市值"].sum() > 0:
                     fig = px.pie(broker_summary, values='市值', names='券商', hole=0.4)
-                    fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+                    fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), paper_bgcolor='rgba(0,0,0,0)')
                     st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("---")
