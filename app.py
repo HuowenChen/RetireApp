@@ -31,7 +31,6 @@ def init_connection():
     try: sheet_funds = spreadsheet.worksheet("基金帳戶")
     except: sheet_funds = spreadsheet.add_worksheet(title="基金帳戶", rows="100", cols="20")
     
-    # 🌟 新增：自動建立「資產歷史紀錄」分頁
     try: sheet_history = spreadsheet.worksheet("資產歷史紀錄")
     except: 
         sheet_history = spreadsheet.add_worksheet(title="資產歷史紀錄", rows="1000", cols="5")
@@ -79,55 +78,69 @@ def load_history():
         return pd.DataFrame()
     except: return pd.DataFrame()
 
-# --- 批次下載引擎 ---
+# --- 🌟 終極強化版：批次 + 逐筆補漏抓價引擎 ---
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_market_data_batched(df_stocks):
+def fetch_market_data_robust(df_stocks):
     market_data = {}
     tickers_primary = ["TWD=X", "JPYTWD=X"]
+    
+    # 1. 建立標準化代號清單
     for _, row in df_stocks.iterrows():
         sym = str(row["代號"]).upper().strip()
-        if row["市場"] == "台股": tickers_primary.append(f"{sym}.TW")
-        elif row["市場"] == "美股": tickers_primary.append(sym)
-        elif row["市場"] == "日股": tickers_primary.append(f"{sym}.T")
+        if row["市場"] == "台股":
+            tickers_primary.append(f"{sym}.TW")
+        elif row["市場"] == "美股":
+            # 🌟 自動將 BRK.B 轉換為 Yahoo 看得懂的 BRK-B
+            sym_us = sym.replace(".", "-")
+            tickers_primary.append(sym_us)
+        elif row["市場"] == "日股":
+            tickers_primary.append(f"{sym}.T")
             
     tickers_primary = list(set(tickers_primary))
 
+    # 2. 批次下載 (提升速度)
     if tickers_primary:
         try:
             data = yf.download(tickers_primary, period="5d", ignore_tz=True)
-            if not data.empty and 'Close' in data:
-                close_data = data['Close']
+            if not data.empty:
                 for t in tickers_primary:
                     try:
-                        val = close_data[t].iloc[-1] if isinstance(close_data, pd.DataFrame) else close_data.iloc[-1]
+                        # 兼容新舊版 yfinance 的結構
+                        if ('Close', t) in data.columns: val = data[('Close', t)].dropna().iloc[-1]
+                        elif 'Close' in data.columns and t in data['Close'].columns: val = data['Close'][t].dropna().iloc[-1]
+                        elif 'Close' in data.columns: val = data['Close'].dropna().iloc[-1]
+                        else: val = 0.0
                         market_data[t] = float(val) if pd.notna(val) else 0.0
-                    except: market_data[t] = 0.0
-        except Exception as e: print(f"Primary batch failed: {e}")
+                    except:
+                        pass
+        except Exception as e: print(f"Batch failed: {e}")
 
-    tickers_otc = []
+    # 3. 🛡️ 終極防漏機制：逐筆檢查，沒抓到的強制單獨抓
+    for t in tickers_primary:
+        if market_data.get(t, 0.0) == 0.0:
+            try:
+                hist = yf.Ticker(t).history(period="5d")
+                if not hist.empty: market_data[t] = float(hist['Close'].dropna().iloc[-1])
+            except: pass
+
+    # 4. 🇹🇼 櫃買與債券 ETF 救援機制 (.TWO)
     for _, row in df_stocks.iterrows():
         if row["市場"] == "台股":
             sym = str(row["代號"]).upper().strip()
+            # 如果上市 (.TW) 沒抓到，嘗試上櫃 (.TWO)
             if market_data.get(f"{sym}.TW", 0.0) == 0.0:
-                tickers_otc.append(f"{sym}.TWO")
-                
-    tickers_otc = list(set(tickers_otc))
-    if tickers_otc:
-        try:
-            data_otc = yf.download(tickers_otc, period="5d", ignore_tz=True)
-            if not data_otc.empty and 'Close' in data_otc:
-                close_otc = data_otc['Close']
-                for t in tickers_otc:
-                    try:
-                        val = close_otc[t].iloc[-1] if isinstance(close_otc, pd.DataFrame) else close_otc.iloc[-1]
-                        market_data[t] = float(val) if pd.notna(val) else 0.0
-                    except: market_data[t] = 0.0
-        except Exception as e: print(f"OTC batch failed: {e}")
+                otc_t = f"{sym}.TWO"
+                try:
+                    hist_otc = yf.Ticker(otc_t).history(period="5d")
+                    if not hist_otc.empty:
+                        market_data[otc_t] = float(hist_otc['Close'].dropna().iloc[-1])
+                except: pass
 
     return market_data
 
 # --- 側邊欄 ---
 st.sidebar.header("🎯 退休目標設定")
+# 更新為 1.2 億目標，25 萬月支出
 fire_goal = st.sidebar.number_input("目標總資產 (TWD)", value=120000000, step=10000000)
 monthly_expense = st.sidebar.number_input("預估每月花費 (TWD)", value=250000, step=10000)
 
@@ -136,10 +149,10 @@ st.info("💡 **操作提示**：請在您的 Google 試算表中維護持股與
 
 # --- 核心結算邏輯 ---
 if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", use_container_width=True):
-    with st.spinner('連線結算中，並記錄今日資產狀態...'):
+    with st.spinner('連線結算中，正在掃描上市櫃與海外市場...'):
         try:
             df_stocks, df_funds = load_data_from_sheets()
-            market_data = fetch_market_data_batched(df_stocks)
+            market_data = fetch_market_data_robust(df_stocks)
             
             usd_twd = market_data.get("TWD=X", 32.0)
             if usd_twd == 0.0: usd_twd = 32.0
@@ -154,9 +167,14 @@ if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", u
                 
                 price = 0.0
                 fx = 1.0
-                if market == "台股": price = market_data.get(f"{symbol}.TW", market_data.get(f"{symbol}.TWO", 0.0))
-                elif market == "美股": price, fx = market_data.get(symbol, 0.0), usd_twd
-                elif market == "日股": price, fx = market_data.get(f"{symbol}.T", 0.0), jpy_twd
+                if market == "台股": 
+                    # 優先取用 .TW，若沒有則取 .TWO
+                    price = market_data.get(f"{symbol}.TW", market_data.get(f"{symbol}.TWO", 0.0))
+                elif market == "美股": 
+                    sym_us = symbol.replace(".", "-")
+                    price, fx = market_data.get(sym_us, 0.0), usd_twd
+                elif market == "日股": 
+                    price, fx = market_data.get(f"{symbol}.T", 0.0), jpy_twd
                     
                 value_twd = price * shares * fx
                 dividend_twd = value_twd * yield_pct
@@ -179,7 +197,6 @@ if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", u
             
             try:
                 hist_records = sheet_history.get_all_values()
-                # 如果最後一筆紀錄的日期就是今天，則直接覆蓋那一列；否則新增一列
                 if len(hist_records) > 1 and hist_records[-1][0] == today_str:
                     row_idx = len(hist_records)
                     sheet_history.update(values=[[today_str, float(total_value), float(total_annual_dividend)]], range_name=f"A{row_idx}:C{row_idx}")
@@ -202,7 +219,7 @@ if st.button("🔄 從 Google 試算表同步並結算總值", type="primary", u
             if not df_hist_plot.empty and len(df_hist_plot) > 0:
                 st.subheader("📈 資產成長趨勢 (歷史軌跡)")
                 fig_line = px.line(df_hist_plot, x="紀錄日期", y="全球總資產(TWD)", markers=True, 
-                                   color_discrete_sequence=['#00FF7F']) # 螢光綠色折線，搭配黑色主題非常帥
+                                   color_discrete_sequence=['#00FF7F']) 
                 fig_line.update_layout(margin=dict(t=20, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_line, use_container_width=True)
                 st.markdown("---")
