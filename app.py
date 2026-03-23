@@ -55,7 +55,9 @@ def load_data_from_sheets():
     if len(raw_funds) > 1:
         df_funds = pd.DataFrame(raw_funds[1:], columns=raw_funds[0])
         if "券商/平台" not in df_funds.columns: df_funds.insert(1, "券商/平台", "未指定")
-        df_funds["目前總額(TWD)"] = pd.to_numeric(df_funds["目前總額(TWD)", errors='coerce']).fillna(0)
+        
+        # 🌟 這裡修復了括號放錯位置的 Bug
+        df_funds["目前總額(TWD)"] = pd.to_numeric(df_funds["目前總額(TWD)"], errors='coerce').fillna(0)
         df_funds["預估殖利率(%)"] = pd.to_numeric(df_funds["預估殖利率(%)"], errors='coerce').fillna(0)
     else:
         df_funds = pd.DataFrame(columns=["基金名稱", "券商/平台", "目前總額(TWD)", "預估殖利率(%)"])
