@@ -89,7 +89,7 @@ def load_history():
         return pd.DataFrame()
     except: return pd.DataFrame()
 
-# --- 批次抓價引擎 ---
+# --- 抓價引擎 ---
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_market_data_robust(df_stocks):
     market_data = {}
@@ -232,55 +232,19 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             col_d.metric("平均每月被動收入", f"${monthly_dividend:,.0f}", f"缺口: ${monthly_expense - monthly_dividend:,.0f}" if monthly_expense > monthly_dividend else "✅ 已達標")
             
             st.markdown("---")
-            
-            df_hist_plot = load_history()
-            if not df_hist_plot.empty and len(df_hist_plot) > 0 and "淨資產(TWD)" in df_hist_plot.columns:
-                st.subheader("📈 淨資產成長趨勢 (已扣除負債)")
-                fig_line = px.line(df_hist_plot, x="紀錄日期", y=["總資產(TWD)", "淨資產(TWD)", "總負債(TWD)"], markers=True,
-                                   color_discrete_map={"總資產(TWD)": "#1f77b4", "淨資產(TWD)": "#00FF7F", "總負債(TWD)": "#ff7f0e"})
-                fig_line.update_layout(margin=dict(t=20, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', legend_title_text='')
-                st.plotly_chart(fig_line, use_container_width=True)
-                st.markdown("---")
-            
-            st.subheader("🚀 淨資產 1.2 億 FIRE 目標進度")
-            progress = min(max(net_worth / fire_goal, 0), 1.0) if fire_goal > 0 else 1.0
-            st.progress(progress)
-            st.write(f"目前達成率：**{progress*100:.2f}%** (目標：${fire_goal:,.0f})")
-            st.markdown("---")
 
-            # --- 分頁與柏拉圖模組 ---
-            st.subheader("📋 各市場資產明細與柏拉圖 (Pareto)")
-            tab_tw, tab_us, tab_jp, tab_fund, tab_liab = st.tabs(["🇹🇼 台股部位", "🇺🇸 美股部位", "🇯🇵 日股部位", "📈 基金部位", "📉 負債清單"])
+            # 🌟 總資產雙圓餅圖回歸
+            st.subheader("📊 總資產配置佔比")
+            col_pie1, col_pie2 = st.columns(2)
             
-            def render_market_tab(market_name, df_market):
-                if df_market.empty:
-                    st.info(f"目前尚無{market_name}資料。")
-                    return
-                
-                subtotal = df_market["市值(TWD)"].sum()
-                st.markdown(f"**{market_name} 總計：** `${subtotal:,.0f}` TWD")
-                
-                # 🌟 關鍵修復：柏拉圖 X 軸強制設為分類字串
-                df_plot = df_market.groupby("標的名稱")["市值(TWD)"].sum().reset_index().sort_values(by="市值(TWD)", ascending=False)
-                df_plot['標的名稱'] = df_plot['標的名稱'].astype(str) # 確保標的名稱是純字串
-                
-                fig_bar = px.bar(df_plot, x='標的名稱', y='市值(TWD)', title=f"{market_name} 各股資金佔比")
-                # 告訴 Plotly X 軸是分類(Category)，不要自動轉換成數學連續區間
-                fig_bar.update_xaxes(type='category')
-                fig_bar.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_bar, use_container_width=True)
-                
-                df_display = df_market.copy()
-                df_display["現價"] = df_display["現價"].apply(lambda x: f"{float(x):.2f}" if x != "-" else x)
-                df_display["市值(TWD)"] = df_display["市值(TWD)"].map(lambda x: f"{x:,.0f}")
-                df_display["殖利率"] = df_display["殖利率"].map(lambda x: f"{x*100:.2f}%")
-                df_display["年配息(TWD)"] = df_display["年配息(TWD)"].map(lambda x: f"{x:,.0f}")
-                st.dataframe(df_display, use_container_width=True)
-
-            with tab_tw: render_market_tab("台股", df_raw[df_raw["市場"] == "台股"])
-            with tab_us: render_market_tab("美股", df_raw[df_raw["市場"] == "美股"])
-            with tab_jp: render_market_tab("日股", df_raw[df_raw["市場"] == "日股"])
-            with tab_fund: render_market_tab("基金", df_raw[df_raw["市場"] == "基金"])
+            with col_pie1:
+                df_market_pie = df_raw.groupby("市場")["市值(TWD)"].sum().reset_index()
+                if not df_market_pie.empty and df_market_pie["市值(TWD)"].sum() > 0:
+                    fig_market = px.pie(df_market_pie, values='市值(TWD)', names='市場', hole=0.4, title="依市場/資產類別")
+                    fig_market.update_layout(margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='rgba(0,0,0,0)')
+                    st.plotly_chart(fig_market, use_container_width=True)
             
-            with tab_liab:
-                st.info("📉 您的負債清
+            with col_pie2:
+                broker_summary = df_raw.groupby("券商").agg({"市值(TWD)": "sum"}).reset_index()
+                if not broker_summary.empty and broker_summary["市值(TWD)"].sum() > 0:
+                    fig_broker = px.pie(broker_summary, values='市值(TWD)', names='券商', hole=0.4, title="依券商/平台")
