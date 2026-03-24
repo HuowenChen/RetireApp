@@ -36,7 +36,6 @@ def init_connection():
         sheet_liab = spreadsheet.add_worksheet(title="負債清單", rows="100", cols="10")
         sheet_liab.append_row(["負債項目(如房貸,質借)", "貸款機構", "目前餘額(TWD)", "貸款利率(%)"])
 
-    # 🌟 新版歷史紀錄：新增各市場總計欄位
     try: sheet_history = spreadsheet.worksheet("資產歷史紀錄")
     except: 
         sheet_history = spreadsheet.add_worksheet(title="資產歷史紀錄", rows="1000", cols="9")
@@ -91,7 +90,7 @@ def load_history():
         return pd.DataFrame()
     except: return pd.DataFrame()
 
-# --- 🌟 終極抓價引擎：雙管齊下 (上市+上櫃) ---
+# --- 抓價引擎 ---
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_market_data_robust(df_stocks):
     market_data = {}
@@ -101,7 +100,6 @@ def fetch_market_data_robust(df_stocks):
     for _, row in df_stocks.iterrows():
         sym = str(row["代號"]).upper().strip()
         if row["市場"] == "台股": 
-            # 🌟 秘訣：同時把 .TW 和 .TWO 都丟進去抓，誰有資料就用誰！
             tickers_primary.extend([f"{sym}.TW", f"{sym}.TWO"])
         elif row["市場"] == "美股": tickers_primary.append(sym.replace(".", "-"))
         elif row["市場"] == "日股": tickers_primary.append(f"{sym}.T")
@@ -122,7 +120,6 @@ def fetch_market_data_robust(df_stocks):
                     except: pass
         except: pass
 
-    # 抓取公司名稱 (只針對成功抓到報價的標的，加速處理)
     for t in tickers_primary:
         if market_data.get(t, 0.0) > 0.0:
             try:
@@ -171,7 +168,6 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                 stock_name = symbol 
                 
                 if market == "台股": 
-                    # 🌟 優先取用 .TW，若為 0 則自動取用 .TWO (上櫃)
                     price = market_data.get(f"{symbol}.TW", 0.0)
                     target_t = f"{symbol}.TW"
                     if price == 0.0:
@@ -209,7 +205,7 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             total_liabilities = df_liab["目前餘額(TWD)"].sum() if not df_liab.empty else 0
             net_worth = total_assets - total_liabilities
             
-            # 寫入歷史紀錄 (包含細分市場)
+            # 寫入歷史紀錄
             tz_tw = timezone(timedelta(hours=8))
             today_str = datetime.now(tz_tw).strftime("%Y-%m-%d")
             
@@ -268,7 +264,7 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             st.write(f"目前達成率：**{progress*100:.2f}%**")
             st.markdown("---")
 
-            # --- 分頁與市場專屬資訊 ---
+            # --- 🌟 分頁模組更新：加入券商圓餅圖 ---
             st.subheader("📋 各市場專屬儀表板與明細清單")
             tab_tw, tab_us, tab_jp, tab_fund, tab_liab = st.tabs(["🇹🇼 台股", "🇺🇸 美股", "🇯🇵 日股", "📈 基金", "📉 負債"])
             
@@ -287,23 +283,32 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                     st.write(f"🎯 **目標達成率：{m_progress*100:.2f}%** (目標 ${target_goal:,.0f})")
                     st.progress(m_progress)
 
-                # 🌟 專屬圓餅圖 (取代柏拉圖)
+                # 🌟 中間區塊：雙圓餅圖 (依標的 vs 依券商)
                 col_p1, col_p2 = st.columns([1, 1])
                 with col_p1:
-                    df_plot = df_market.groupby("標的名稱")["市值(TWD)"].sum().reset_index()
-                    if not df_plot.empty:
-                        fig_pie = px.pie(df_plot, values='市值(TWD)', names='標的名稱', title=f"{market_name} 各股資金佔比", hole=0.3)
-                        fig_pie.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
-                        st.plotly_chart(fig_pie, use_container_width=True)
-                
-                # 🌟 專屬歷史趨勢圖
+                    df_plot_stock = df_market.groupby("標的名稱")["市值(TWD)"].sum().reset_index()
+                    if not df_plot_stock.empty:
+                        fig_pie_stock = px.pie(df_plot_stock, values='市值(TWD)', names='標的名稱', title=f"{market_name} 各股資金佔比", hole=0.3)
+                        fig_pie_stock.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+                        st.plotly_chart(fig_pie_stock, use_container_width=True)
+                        
                 with col_p2:
-                    if not df_hist_plot.empty and hist_col in df_hist_plot.columns:
-                        fig_hist = px.line(df_hist_plot, x="紀錄日期", y=hist_col, markers=True, title=f"{market_name} 成長趨勢")
-                        fig_hist.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
-                        st.plotly_chart(fig_hist, use_container_width=True)
+                    # 全新加入的各市場「券商佔比」圓餅圖
+                    df_plot_broker = df_market.groupby("券商")["市值(TWD)"].sum().reset_index()
+                    if not df_plot_broker.empty:
+                        # 將基金分頁的標題動態調整為「各券商/平台」
+                        broker_title = "各平台資金佔比" if market_name == "基金" else "各券商資金佔比"
+                        fig_pie_broker = px.pie(df_plot_broker, values='市值(TWD)', names='券商', title=f"{market_name} {broker_title}", hole=0.3)
+                        fig_pie_broker.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+                        st.plotly_chart(fig_pie_broker, use_container_width=True)
                 
-                # 明細表
+                # 🌟 下方區塊：全寬歷史趨勢圖
+                if not df_hist_plot.empty and hist_col in df_hist_plot.columns:
+                    fig_hist = px.line(df_hist_plot, x="紀錄日期", y=hist_col, markers=True, title=f"{market_name} 歷史成長趨勢")
+                    fig_hist.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                
+                # 最下方：明細表
                 df_display = df_market.copy()
                 df_display["現價"] = df_display["現價"].apply(lambda x: f"{float(x):.2f}" if x != "-" else x)
                 df_display["市值(TWD)"] = df_display["市值(TWD)"].map(lambda x: f"{x:,.0f}")
@@ -326,5 +331,6 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                 else:
                     st.success("太棒了！您目前沒有任何負債。")
 
+        # 👇 確保連這三行都有被複製進去喔 👇
         except Exception as e:
             st.error(f"計算發生錯誤。詳細錯誤: {e}")
