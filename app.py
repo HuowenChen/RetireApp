@@ -49,13 +49,38 @@ except Exception as e:
     st.error(f"連線失敗: {e}")
     st.stop()
 
-# --- 讀取資料 ---
+# --- 讀取資料 (🌟 加入智慧標題診斷) ---
 def load_data_from_sheets():
     raw_stocks = sheet_stocks.get_all_values()
     if len(raw_stocks) > 1:
-        df_stocks = pd.DataFrame(raw_stocks[1:], columns=raw_stocks[0])
+        # 強制清理標題所有的隱形空白與全形空白
+        headers = [str(col).replace('\u3000', '').strip() for col in raw_stocks[0]]
+        df_stocks = pd.DataFrame(raw_stocks[1:], columns=headers)
+        
+        # 🛡️ 智慧修復與照妖鏡
+        if "代號" not in df_stocks.columns:
+            # 找看看有沒有包含「代號」、「代碼」或「標的」的欄位
+            possible = [c for c in df_stocks.columns if "代號" in c or "代碼" in c or "標的" in c]
+            if possible: 
+                df_stocks.rename(columns={possible[0]: "代號"}, inplace=True)
+            else:
+                st.error(f"🚨 找不到「代號」欄位！\n\n**系統在您的第一頁試算表讀到的標題是：**\n`{headers}`\n\n👉 *提示：如果上面顯示的是您的第一檔股票（例如 ['台股', '元大', '2330'...]），代表您不小心把標題列刪掉了！*")
+                st.stop()
+
+        if "市場" not in df_stocks.columns: df_stocks.insert(0, "市場", "台股")
         if "券商" not in df_stocks.columns: df_stocks.insert(1, "券商", "未指定")
-        if "預估殖利率(%)" not in df_stocks.columns: df_stocks["預估殖利率(%)"] = 4.0
+        
+        # 處理殖利率欄位名稱可能的變異
+        if "預估殖利率(%)" not in df_stocks.columns:
+            y_cols = [c for c in df_stocks.columns if "殖利率" in c]
+            if y_cols: df_stocks.rename(columns={y_cols[0]: "預估殖利率(%)"}, inplace=True)
+            else: df_stocks["預估殖利率(%)"] = 4.0
+
+        if "股數" not in df_stocks.columns:
+            s_cols = [c for c in df_stocks.columns if "股數" in c or "數量" in c]
+            if s_cols: df_stocks.rename(columns={s_cols[0]: "股數"}, inplace=True)
+            else: df_stocks["股數"] = 0
+
         df_stocks["代號"] = df_stocks["代號"].astype(str).str.replace("'", "").str.strip()
         df_stocks["股數"] = pd.to_numeric(df_stocks["股數"], errors='coerce').fillna(0)
         df_stocks["預估殖利率(%)"] = pd.to_numeric(df_stocks["預估殖利率(%)"], errors='coerce').fillna(0)
@@ -130,7 +155,7 @@ def fetch_market_data_robust(df_stocks):
 
     return market_data, market_names
 
-# --- 側邊欄：獨立目標設定 ---
+# --- 側邊欄 ---
 st.sidebar.header("🎯 各市場資產目標")
 fire_goal_tw = st.sidebar.number_input("🇹🇼 台股目標 (TWD)", value=60000000, step=5000000)
 fire_goal_us = st.sidebar.number_input("🇺🇸 美股目標 (TWD)", value=40000000, step=5000000)
@@ -205,7 +230,6 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             total_liabilities = df_liab["目前餘額(TWD)"].sum() if not df_liab.empty else 0
             net_worth = total_assets - total_liabilities
             
-            # 寫入歷史紀錄
             tz_tw = timezone(timedelta(hours=8))
             today_str = datetime.now(tz_tw).strftime("%Y-%m-%d")
             
@@ -264,7 +288,6 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             st.write(f"目前達成率：**{progress*100:.2f}%**")
             st.markdown("---")
 
-            # --- 🌟 分頁模組更新：加入券商圓餅圖 ---
             st.subheader("📋 各市場專屬儀表板與明細清單")
             tab_tw, tab_us, tab_jp, tab_fund, tab_liab = st.tabs(["🇹🇼 台股", "🇺🇸 美股", "🇯🇵 日股", "📈 基金", "📉 負債"])
             
@@ -274,16 +297,13 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                     return
                 
                 subtotal = df_market["市值(TWD)"].sum()
-                
                 col_m1, col_m2 = st.columns([1, 1])
-                with col_m1:
-                    st.metric(f"**{market_name} 總計 (TWD)**", f"${subtotal:,.0f}")
+                with col_m1: st.metric(f"**{market_name} 總計 (TWD)**", f"${subtotal:,.0f}")
                 with col_m2:
                     m_progress = min(max(subtotal / target_goal, 0), 1.0) if target_goal > 0 else 1.0
                     st.write(f"🎯 **目標達成率：{m_progress*100:.2f}%** (目標 ${target_goal:,.0f})")
                     st.progress(m_progress)
 
-                # 🌟 中間區塊：雙圓餅圖 (依標的 vs 依券商)
                 col_p1, col_p2 = st.columns([1, 1])
                 with col_p1:
                     df_plot_stock = df_market.groupby("標的名稱")["市值(TWD)"].sum().reset_index()
@@ -293,22 +313,18 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                         st.plotly_chart(fig_pie_stock, use_container_width=True)
                         
                 with col_p2:
-                    # 全新加入的各市場「券商佔比」圓餅圖
                     df_plot_broker = df_market.groupby("券商")["市值(TWD)"].sum().reset_index()
                     if not df_plot_broker.empty:
-                        # 將基金分頁的標題動態調整為「各券商/平台」
                         broker_title = "各平台資金佔比" if market_name == "基金" else "各券商資金佔比"
                         fig_pie_broker = px.pie(df_plot_broker, values='市值(TWD)', names='券商', title=f"{market_name} {broker_title}", hole=0.3)
                         fig_pie_broker.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
                         st.plotly_chart(fig_pie_broker, use_container_width=True)
                 
-                # 🌟 下方區塊：全寬歷史趨勢圖
                 if not df_hist_plot.empty and hist_col in df_hist_plot.columns:
                     fig_hist = px.line(df_hist_plot, x="紀錄日期", y=hist_col, markers=True, title=f"{market_name} 歷史成長趨勢")
                     fig_hist.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
                     st.plotly_chart(fig_hist, use_container_width=True)
                 
-                # 最下方：明細表
                 df_display = df_market.copy()
                 df_display["現價"] = df_display["現價"].apply(lambda x: f"{float(x):.2f}" if x != "-" else x)
                 df_display["市值(TWD)"] = df_display["市值(TWD)"].map(lambda x: f"{x:,.0f}")
@@ -331,6 +347,5 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                 else:
                     st.success("太棒了！您目前沒有任何負債。")
 
-        # 👇 確保連這三行都有被複製進去喔 👇
         except Exception as e:
             st.error(f"計算發生錯誤。詳細錯誤: {e}")
