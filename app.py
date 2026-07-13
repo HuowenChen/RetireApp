@@ -49,28 +49,26 @@ except Exception as e:
     st.error(f"連線失敗: {e}")
     st.stop()
 
-# --- 讀取資料 (🌟 加入智慧標題診斷) ---
+# --- 讀取資料 (🌟 加入極致容錯與智慧清洗) ---
 def load_data_from_sheets():
     raw_stocks = sheet_stocks.get_all_values()
     if len(raw_stocks) > 1:
-        # 強制清理標題所有的隱形空白與全形空白
-        headers = [str(col).replace('\u3000', '').strip() for col in raw_stocks[0]]
+        # 清除所有標題的隱形空白、全形空白
+        headers = [str(col).replace('\u3000', '').replace('\xa0', '').strip() for col in raw_stocks[0]]
         df_stocks = pd.DataFrame(raw_stocks[1:], columns=headers)
         
-        # 🛡️ 智慧修復與照妖鏡
+        # 智慧找尋「代號」欄位
         if "代號" not in df_stocks.columns:
-            # 找看看有沒有包含「代號」、「代碼」或「標的」的欄位
             possible = [c for c in df_stocks.columns if "代號" in c or "代碼" in c or "標的" in c]
             if possible: 
                 df_stocks.rename(columns={possible[0]: "代號"}, inplace=True)
             else:
-                st.error(f"🚨 找不到「代號」欄位！\n\n**系統在您的第一頁試算表讀到的標題是：**\n`{headers}`\n\n👉 *提示：如果上面顯示的是您的第一檔股票（例如 ['台股', '元大', '2330'...]），代表您不小心把標題列刪掉了！*")
+                st.error(f"🚨 找不到「代號」欄位！請檢查 Google 試算表第一頁標題。目前讀到的標題為: {headers}")
                 st.stop()
 
         if "市場" not in df_stocks.columns: df_stocks.insert(0, "市場", "台股")
         if "券商" not in df_stocks.columns: df_stocks.insert(1, "券商", "未指定")
         
-        # 處理殖利率欄位名稱可能的變異
         if "預估殖利率(%)" not in df_stocks.columns:
             y_cols = [c for c in df_stocks.columns if "殖利率" in c]
             if y_cols: df_stocks.rename(columns={y_cols[0]: "預估殖利率(%)"}, inplace=True)
@@ -81,23 +79,43 @@ def load_data_from_sheets():
             if s_cols: df_stocks.rename(columns={s_cols[0]: "股數"}, inplace=True)
             else: df_stocks["股數"] = 0
 
+        # 清洗數字 (移除逗號與百分比符號)
         df_stocks["代號"] = df_stocks["代號"].astype(str).str.replace("'", "").str.strip()
-        df_stocks["股數"] = pd.to_numeric(df_stocks["股數"], errors='coerce').fillna(0)
-        df_stocks["預估殖利率(%)"] = pd.to_numeric(df_stocks["預估殖利率(%)"], errors='coerce').fillna(0)
+        df_stocks["股數"] = pd.to_numeric(df_stocks["股數"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        df_stocks["預估殖利率(%)"] = pd.to_numeric(df_stocks["預估殖利率(%)"].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
     else: df_stocks = pd.DataFrame(columns=["市場", "券商", "代號", "股數", "預估殖利率(%)"])
         
     raw_funds = sheet_funds.get_all_values()
     if len(raw_funds) > 1:
-        df_funds = pd.DataFrame(raw_funds[1:], columns=raw_funds[0])
+        headers_f = [str(col).replace('\u3000', '').replace('\xa0', '').strip() for col in raw_funds[0]]
+        df_funds = pd.DataFrame(raw_funds[1:], columns=headers_f)
         if "券商/平台" not in df_funds.columns: df_funds.insert(1, "券商/平台", "未指定")
-        df_funds["目前總額(TWD)"] = pd.to_numeric(df_funds["目前總額(TWD)"], errors='coerce').fillna(0)
-        df_funds["預估殖利率(%)"] = pd.to_numeric(df_funds["預估殖利率(%)"], errors='coerce').fillna(0)
+        
+        if "目前總額(TWD)" not in df_funds.columns:
+            t_cols = [c for c in df_funds.columns if "總額" in c or "金額" in c or "市值" in c]
+            if t_cols: df_funds.rename(columns={t_cols[0]: "目前總額(TWD)"}, inplace=True)
+            else: df_funds["目前總額(TWD)"] = 0
+            
+        if "預估殖利率(%)" not in df_funds.columns:
+            y_cols = [c for c in df_funds.columns if "殖利率" in c]
+            if y_cols: df_funds.rename(columns={y_cols[0]: "預估殖利率(%)"}, inplace=True)
+            else: df_funds["預估殖利率(%)"] = 4.0
+
+        df_funds["目前總額(TWD)"] = pd.to_numeric(df_funds["目前總額(TWD)"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        df_funds["預估殖利率(%)"] = pd.to_numeric(df_funds["預估殖利率(%)"].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
     else: df_funds = pd.DataFrame(columns=["基金名稱", "券商/平台", "目前總額(TWD)", "預估殖利率(%)"])
     
     raw_liab = sheet_liab.get_all_values()
     if len(raw_liab) > 1:
-        df_liab = pd.DataFrame(raw_liab[1:], columns=raw_liab[0])
-        df_liab["目前餘額(TWD)"] = pd.to_numeric(df_liab["目前餘額(TWD)"], errors='coerce').fillna(0)
+        headers_l = [str(col).replace('\u3000', '').replace('\xa0', '').strip() for col in raw_liab[0]]
+        df_liab = pd.DataFrame(raw_liab[1:], columns=headers_l)
+        
+        if "目前餘額(TWD)" not in df_liab.columns:
+            l_cols = [c for c in df_liab.columns if "餘額" in c or "金額" in c]
+            if l_cols: df_liab.rename(columns={l_cols[0]: "目前餘額(TWD)"}, inplace=True)
+            else: df_liab["目前餘額(TWD)"] = 0
+            
+        df_liab["目前餘額(TWD)"] = pd.to_numeric(df_liab["目前餘額(TWD)"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
     else: df_liab = pd.DataFrame(columns=["負債項目(如房貸,質借)", "貸款機構", "目前餘額(TWD)", "貸款利率(%)"])
         
     return df_stocks, df_funds, df_liab
@@ -110,7 +128,7 @@ def load_history():
             numeric_cols = ["總資產(TWD)", "總負債(TWD)", "淨資產(TWD)", "預估年領股息(TWD)", "台股總計", "美股總計", "日股總計", "基金總計"]
             for col in numeric_cols:
                 if col in df_hist.columns:
-                    df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce').fillna(0)
+                    df_hist[col] = pd.to_numeric(df_hist[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
             return df_hist
         return pd.DataFrame()
     except: return pd.DataFrame()
@@ -155,7 +173,7 @@ def fetch_market_data_robust(df_stocks):
 
     return market_data, market_names
 
-# --- 側邊欄 ---
+# --- 側邊欄：獨立目標設定 ---
 st.sidebar.header("🎯 各市場資產目標")
 fire_goal_tw = st.sidebar.number_input("🇹🇼 台股目標 (TWD)", value=60000000, step=5000000)
 fire_goal_us = st.sidebar.number_input("🇺🇸 美股目標 (TWD)", value=40000000, step=5000000)
@@ -230,6 +248,7 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             total_liabilities = df_liab["目前餘額(TWD)"].sum() if not df_liab.empty else 0
             net_worth = total_assets - total_liabilities
             
+            # 寫入歷史紀錄
             tz_tw = timezone(timedelta(hours=8))
             today_str = datetime.now(tz_tw).strftime("%Y-%m-%d")
             
