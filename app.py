@@ -49,15 +49,13 @@ except Exception as e:
     st.error(f"連線失敗: {e}")
     st.stop()
 
-# --- 讀取資料 (🌟 加入極致容錯與智慧清洗) ---
+# --- 讀取資料 (🌟 加入回傳 raw_stocks 以供寫回) ---
 def load_data_from_sheets():
     raw_stocks = sheet_stocks.get_all_values()
     if len(raw_stocks) > 1:
-        # 清除所有標題的隱形空白、全形空白
         headers = [str(col).replace('\u3000', '').replace('\xa0', '').strip() for col in raw_stocks[0]]
         df_stocks = pd.DataFrame(raw_stocks[1:], columns=headers)
         
-        # 智慧找尋「代號」欄位
         if "代號" not in df_stocks.columns:
             possible = [c for c in df_stocks.columns if "代號" in c or "代碼" in c or "標的" in c]
             if possible: 
@@ -79,11 +77,12 @@ def load_data_from_sheets():
             if s_cols: df_stocks.rename(columns={s_cols[0]: "股數"}, inplace=True)
             else: df_stocks["股數"] = 0
 
-        # 清洗數字 (移除逗號與百分比符號)
         df_stocks["代號"] = df_stocks["代號"].astype(str).str.replace("'", "").str.strip()
         df_stocks["股數"] = pd.to_numeric(df_stocks["股數"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
         df_stocks["預估殖利率(%)"] = pd.to_numeric(df_stocks["預估殖利率(%)"].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
-    else: df_stocks = pd.DataFrame(columns=["市場", "券商", "代號", "股數", "預估殖利率(%)"])
+    else: 
+        df_stocks = pd.DataFrame(columns=["市場", "券商", "代號", "股數", "預估殖利率(%)"])
+        raw_stocks = [["市場", "券商", "代號", "股數", "預估殖利率(%)"]]
         
     raw_funds = sheet_funds.get_all_values()
     if len(raw_funds) > 1:
@@ -118,7 +117,7 @@ def load_data_from_sheets():
         df_liab["目前餘額(TWD)"] = pd.to_numeric(df_liab["目前餘額(TWD)"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
     else: df_liab = pd.DataFrame(columns=["負債項目(如房貸,質借)", "貸款機構", "目前餘額(TWD)", "貸款利率(%)"])
         
-    return df_stocks, df_funds, df_liab
+    return df_stocks, df_funds, df_liab, raw_stocks
 
 def load_history():
     try:
@@ -185,13 +184,13 @@ st.sidebar.markdown("---")
 monthly_expense = st.sidebar.number_input("預估每月花費 (TWD)", value=250000, step=10000)
 
 st.title("📊 RetireFlow 退休戰情室")
-st.info("💡 **操作提示**：請在您的 Google 試算表中維護持股與負債，修改完成後點擊下方按鈕結算。")
+st.info("💡 **操作提示**：請在您的 Google 試算表中維護持股與負債，修改完成後點擊下方按鈕結算，系統將自動把最新報價寫回您的試算表。")
 
 # --- 核心結算邏輯 ---
 if st.button("🔄 同步結算資產與負債總額", type="primary", use_container_width=True):
-    with st.spinner('連線全球交易所、掃描上櫃市場並彙整資料中...'):
+    with st.spinner('連線全球交易所、掃描上櫃市場並將最新報價同步回寫試算表中...'):
         try:
-            df_stocks, df_funds, df_liab = load_data_from_sheets()
+            df_stocks, df_funds, df_liab, raw_stocks = load_data_from_sheets()
             market_data, market_names = fetch_market_data_robust(df_stocks)
             
             usd_twd = market_data.get("TWD=X", 32.0)
@@ -199,11 +198,22 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             jpy_twd = market_data.get("JPYTWD=X", 0.22)
             if jpy_twd == 0.0: jpy_twd = 0.22
 
+            # 🌟 定位「股價」與「代號」欄位以便寫回資料
+            headers_raw = [str(col).replace('\u3000', '').replace('\xa0', '').strip() for col in raw_stocks[0]]
+            if "股價" in headers_raw:
+                price_col_idx = headers_raw.index("股價")
+            else:
+                price_col_idx = len(headers_raw)
+                raw_stocks[0].append("股價")
+                for r in raw_stocks[1:]: r.append("")
+                
+            symbol_col_idx = headers_raw.index("代號") if "代號" in headers_raw else -1
+
             raw_data = []
             total_assets = 0
             market_subtotals = {"台股": 0.0, "美股": 0.0, "日股": 0.0, "基金": 0.0}
             
-            for _, row in df_stocks.iterrows():
+            for i, row in df_stocks.iterrows():
                 market, broker, symbol, shares, yield_pct = row["市場"], str(row.get("券商", "未指定")), str(row["代號"]).upper().strip(), row["股數"], float(row.get("預估殖利率(%)", 0))/100.0
                 
                 price = 0.0
@@ -226,6 +236,17 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                     price, fx = market_data.get(target_t, 0.0), jpy_twd
                     stock_name = market_names.get(target_t, symbol)
                     
+                # 🌟 將最新報價覆寫進原始資料陣列 (補齊長度以防出錯)
+                while len(raw_stocks[i+1]) <= price_col_idx:
+                    raw_stocks[i+1].append("")
+                raw_stocks[i+1][price_col_idx] = float(price) if price > 0 else 0.0
+                
+                # 🌟 保護代號格式 (確保留有單引號防止吃 0)
+                if symbol_col_idx != -1:
+                    sym_val = str(raw_stocks[i+1][symbol_col_idx]).replace("'", "").strip()
+                    if sym_val:
+                        raw_stocks[i+1][symbol_col_idx] = f"'{sym_val}"
+                    
                 value_twd = price * shares * fx
                 dividend_twd = value_twd * yield_pct
                 total_assets += value_twd
@@ -233,6 +254,12 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                 
                 display_name = f"{symbol} {stock_name}" if symbol != stock_name else symbol
                 raw_data.append([market, broker, display_name, shares, price, fx, value_twd, yield_pct, dividend_twd])
+
+            # 🌟 執行單次批次上傳，將最新股價寫回 Google 試算表
+            try:
+                sheet_stocks.update(values=raw_stocks, range_name="A1")
+            except Exception as e:
+                st.warning(f"股價同步寫入試算表失敗: {e}")
 
             for _, row in df_funds.iterrows():
                 broker, fund_name, fund_value, yield_pct = str(row.get("券商/平台", "未指定")), row["基金名稱"], float(row["目前總額(TWD)"]), float(row.get("預估殖利率(%)", 0))/100.0
@@ -248,7 +275,6 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             total_liabilities = df_liab["目前餘額(TWD)"].sum() if not df_liab.empty else 0
             net_worth = total_assets - total_liabilities
             
-            # 寫入歷史紀錄
             tz_tw = timezone(timedelta(hours=8))
             today_str = datetime.now(tz_tw).strftime("%Y-%m-%d")
             
