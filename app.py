@@ -27,7 +27,19 @@ def init_connection():
     client = gspread.authorize(creds)
     spreadsheet = client.open_by_url(st.secrets["sheet_url"])
     
-    sheet_stocks = spreadsheet.sheet1
+    # 🌟 V21 智慧尋找股票分頁 (無視分頁順序)
+    sheet_stocks = None
+    for ws in spreadsheet.worksheets():
+        try:
+            headers = [str(c).strip() for c in ws.row_values(1)]
+            if any("代號" in h or "代碼" in h or "標的" in h for h in headers):
+                sheet_stocks = ws
+                break
+        except: pass
+        
+    if not sheet_stocks:
+        sheet_stocks = spreadsheet.sheet1 # 找不到就預設退回第一頁
+    
     try: sheet_funds = spreadsheet.worksheet("基金帳戶")
     except: sheet_funds = spreadsheet.add_worksheet(title="基金帳戶", rows="100", cols="20")
     
@@ -49,7 +61,7 @@ except Exception as e:
     st.error(f"連線失敗: {e}")
     st.stop()
 
-# --- 讀取資料 (🌟 加入回傳 raw_stocks 以供寫回) ---
+# --- 讀取資料 ---
 def load_data_from_sheets():
     raw_stocks = sheet_stocks.get_all_values()
     if len(raw_stocks) > 1:
@@ -61,7 +73,7 @@ def load_data_from_sheets():
             if possible: 
                 df_stocks.rename(columns={possible[0]: "代號"}, inplace=True)
             else:
-                st.error(f"🚨 找不到「代號」欄位！請檢查 Google 試算表第一頁標題。目前讀到的標題為: {headers}")
+                st.error(f"🚨 找不到「代號」欄位！請檢查 Google 試算表標題。目前讀到的標題為: {headers}")
                 st.stop()
 
         if "市場" not in df_stocks.columns: df_stocks.insert(0, "市場", "台股")
