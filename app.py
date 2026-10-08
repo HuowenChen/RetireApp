@@ -27,7 +27,6 @@ def init_connection():
     client = gspread.authorize(creds)
     spreadsheet = client.open_by_url(st.secrets["sheet_url"])
     
-    # 🌟 V21 智慧尋找股票分頁 (無視分頁順序)
     sheet_stocks = None
     for ws in spreadsheet.worksheets():
         try:
@@ -36,12 +35,15 @@ def init_connection():
                 sheet_stocks = ws
                 break
         except: pass
-        
-    if not sheet_stocks:
-        sheet_stocks = spreadsheet.sheet1 # 找不到就預設退回第一頁
+    if not sheet_stocks: sheet_stocks = spreadsheet.sheet1 
     
     try: sheet_funds = spreadsheet.worksheet("基金帳戶")
     except: sheet_funds = spreadsheet.add_worksheet(title="基金帳戶", rows="100", cols="20")
+    
+    try: sheet_cash = spreadsheet.worksheet("現金倉位")
+    except: 
+        sheet_cash = spreadsheet.add_worksheet(title="現金倉位", rows="100", cols="10")
+        sheet_cash.append_row(["帳戶/機構名稱", "幣別 (如 TWD, USD, JPY)", "目前餘額(原幣)"])
     
     try: sheet_liab = spreadsheet.worksheet("負債清單")
     except: 
@@ -50,13 +52,13 @@ def init_connection():
 
     try: sheet_history = spreadsheet.worksheet("資產歷史紀錄")
     except: 
-        sheet_history = spreadsheet.add_worksheet(title="資產歷史紀錄", rows="1000", cols="9")
-        sheet_history.append_row(["紀錄日期", "總資產(TWD)", "總負債(TWD)", "淨資產(TWD)", "預估年領股息(TWD)", "台股總計", "美股總計", "日股總計", "基金總計"])
+        sheet_history = spreadsheet.add_worksheet(title="資產歷史紀錄", rows="1000", cols="10")
+        sheet_history.append_row(["紀錄日期", "總資產(TWD)", "總負債(TWD)", "淨資產(TWD)", "預估年領股息(TWD)", "台股總計", "美股總計", "日股總計", "基金總計", "現金總計"])
         
-    return sheet_stocks, sheet_funds, sheet_liab, sheet_history
+    return sheet_stocks, sheet_funds, sheet_cash, sheet_liab, sheet_history
 
 try:
-    sheet_stocks, sheet_funds, sheet_liab, sheet_history = init_connection()
+    sheet_stocks, sheet_funds, sheet_cash, sheet_liab, sheet_history = init_connection()
 except Exception as e:
     st.error(f"連線失敗: {e}")
     st.stop()
@@ -70,8 +72,7 @@ def load_data_from_sheets():
         
         if "代號" not in df_stocks.columns:
             possible = [c for c in df_stocks.columns if "代號" in c or "代碼" in c or "標的" in c]
-            if possible: 
-                df_stocks.rename(columns={possible[0]: "代號"}, inplace=True)
+            if possible: df_stocks.rename(columns={possible[0]: "代號"}, inplace=True)
             else:
                 st.error(f"🚨 找不到「代號」欄位！請檢查 Google 試算表標題。目前讀到的標題為: {headers}")
                 st.stop()
@@ -116,6 +117,33 @@ def load_data_from_sheets():
         df_funds["預估殖利率(%)"] = pd.to_numeric(df_funds["預估殖利率(%)"].astype(str).str.replace('%', ''), errors='coerce').fillna(0)
     else: df_funds = pd.DataFrame(columns=["基金名稱", "券商/平台", "目前總額(TWD)", "預估殖利率(%)"])
     
+    # 🌟 智慧讀取原有的現金分頁
+    raw_cash = sheet_cash.get_all_values()
+    if len(raw_cash) > 1:
+        headers_c = [str(col).replace('\u3000', '').replace('\xa0', '').strip() for col in raw_cash[0]]
+        df_cash = pd.DataFrame(raw_cash[1:], columns=headers_c)
+        
+        # 智慧配對帳戶名稱
+        if "帳戶/機構名稱" not in df_cash.columns:
+            acct_cols = [c for c in df_cash.columns if "帳戶" in c or "機構" in c or "銀行" in c or "名稱" in c or "項目" in c]
+            if acct_cols: df_cash.rename(columns={acct_cols[0]: "帳戶/機構名稱"}, inplace=True)
+            else: df_cash.insert(0, "帳戶/機構名稱", "未指定")
+            
+        # 智慧配對幣別
+        if "幣別 (如 TWD, USD, JPY)" not in df_cash.columns:
+            curr_cols = [c for c in df_cash.columns if "幣" in c or "外幣" in c]
+            if curr_cols: df_cash.rename(columns={curr_cols[0]: "幣別 (如 TWD, USD, JPY)"}, inplace=True)
+            else: df_cash["幣別 (如 TWD, USD, JPY)"] = "TWD"
+            
+        # 智慧配對餘額
+        if "目前餘額(原幣)" not in df_cash.columns:
+            bal_cols = [c for c in df_cash.columns if "餘額" in c or "金額" in c or "總額" in c or "現金" in c]
+            if bal_cols: df_cash.rename(columns={bal_cols[0]: "目前餘額(原幣)"}, inplace=True)
+            else: df_cash["目前餘額(原幣)"] = 0
+            
+        df_cash["目前餘額(原幣)"] = pd.to_numeric(df_cash["目前餘額(原幣)"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+    else: df_cash = pd.DataFrame(columns=["帳戶/機構名稱", "幣別 (如 TWD, USD, JPY)", "目前餘額(原幣)"])
+
     raw_liab = sheet_liab.get_all_values()
     if len(raw_liab) > 1:
         headers_l = [str(col).replace('\u3000', '').replace('\xa0', '').strip() for col in raw_liab[0]]
@@ -129,14 +157,14 @@ def load_data_from_sheets():
         df_liab["目前餘額(TWD)"] = pd.to_numeric(df_liab["目前餘額(TWD)"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
     else: df_liab = pd.DataFrame(columns=["負債項目(如房貸,質借)", "貸款機構", "目前餘額(TWD)", "貸款利率(%)"])
         
-    return df_stocks, df_funds, df_liab, raw_stocks
+    return df_stocks, df_funds, df_cash, df_liab, raw_stocks
 
 def load_history():
     try:
         raw_hist = sheet_history.get_all_values()
         if len(raw_hist) > 1:
             df_hist = pd.DataFrame(raw_hist[1:], columns=raw_hist[0])
-            numeric_cols = ["總資產(TWD)", "總負債(TWD)", "淨資產(TWD)", "預估年領股息(TWD)", "台股總計", "美股總計", "日股總計", "基金總計"]
+            numeric_cols = ["總資產(TWD)", "總負債(TWD)", "淨資產(TWD)", "預估年領股息(TWD)", "台股總計", "美股總計", "日股總計", "基金總計", "現金總計"]
             for col in numeric_cols:
                 if col in df_hist.columns:
                     df_hist[col] = pd.to_numeric(df_hist[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -190,19 +218,20 @@ fire_goal_tw = st.sidebar.number_input("🇹🇼 台股目標 (TWD)", value=6000
 fire_goal_us = st.sidebar.number_input("🇺🇸 美股目標 (TWD)", value=40000000, step=5000000)
 fire_goal_jp = st.sidebar.number_input("🇯🇵 日股目標 (TWD)", value=10000000, step=1000000)
 fire_goal_fund = st.sidebar.number_input("📈 基金目標 (TWD)", value=10000000, step=1000000)
+fire_goal_cash = st.sidebar.number_input("💵 現金目標 (TWD)", value=5000000, step=1000000)
 
-fire_goal_total = fire_goal_tw + fire_goal_us + fire_goal_jp + fire_goal_fund
+fire_goal_total = fire_goal_tw + fire_goal_us + fire_goal_jp + fire_goal_fund + fire_goal_cash
 st.sidebar.markdown("---")
 monthly_expense = st.sidebar.number_input("預估每月花費 (TWD)", value=250000, step=10000)
 
 st.title("📊 RetireFlow 退休戰情室")
-st.info("💡 **操作提示**：請在您的 Google 試算表中維護持股與負債，修改完成後點擊下方按鈕結算，系統將自動把最新報價寫回您的試算表。")
+st.info("💡 **操作提示**：系統將自動讀取您的「現金倉位」分頁，結算時也會自動將最新股票報價寫回試算表。")
 
 # --- 核心結算邏輯 ---
 if st.button("🔄 同步結算資產與負債總額", type="primary", use_container_width=True):
     with st.spinner('連線全球交易所、掃描上櫃市場並將最新報價同步回寫試算表中...'):
         try:
-            df_stocks, df_funds, df_liab, raw_stocks = load_data_from_sheets()
+            df_stocks, df_funds, df_cash, df_liab, raw_stocks = load_data_from_sheets()
             market_data, market_names = fetch_market_data_robust(df_stocks)
             
             usd_twd = market_data.get("TWD=X", 32.0)
@@ -210,7 +239,6 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             jpy_twd = market_data.get("JPYTWD=X", 0.22)
             if jpy_twd == 0.0: jpy_twd = 0.22
 
-            # 🌟 定位「股價」與「代號」欄位以便寫回資料
             headers_raw = [str(col).replace('\u3000', '').replace('\xa0', '').strip() for col in raw_stocks[0]]
             if "股價" in headers_raw:
                 price_col_idx = headers_raw.index("股價")
@@ -223,14 +251,12 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
 
             raw_data = []
             total_assets = 0
-            market_subtotals = {"台股": 0.0, "美股": 0.0, "日股": 0.0, "基金": 0.0}
+            market_subtotals = {"台股": 0.0, "美股": 0.0, "日股": 0.0, "基金": 0.0, "現金": 0.0}
             
+            # 股票
             for i, row in df_stocks.iterrows():
                 market, broker, symbol, shares, yield_pct = row["市場"], str(row.get("券商", "未指定")), str(row["代號"]).upper().strip(), row["股數"], float(row.get("預估殖利率(%)", 0))/100.0
-                
-                price = 0.0
-                fx = 1.0
-                stock_name = symbol 
+                price, fx, stock_name = 0.0, 1.0, symbol 
                 
                 if market == "台股": 
                     price = market_data.get(f"{symbol}.TW", 0.0)
@@ -248,16 +274,12 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                     price, fx = market_data.get(target_t, 0.0), jpy_twd
                     stock_name = market_names.get(target_t, symbol)
                     
-                # 🌟 將最新報價覆寫進原始資料陣列 (補齊長度以防出錯)
-                while len(raw_stocks[i+1]) <= price_col_idx:
-                    raw_stocks[i+1].append("")
+                while len(raw_stocks[i+1]) <= price_col_idx: raw_stocks[i+1].append("")
                 raw_stocks[i+1][price_col_idx] = float(price) if price > 0 else 0.0
                 
-                # 🌟 保護代號格式 (確保留有單引號防止吃 0)
                 if symbol_col_idx != -1:
                     sym_val = str(raw_stocks[i+1][symbol_col_idx]).replace("'", "").strip()
-                    if sym_val:
-                        raw_stocks[i+1][symbol_col_idx] = f"'{sym_val}"
+                    if sym_val: raw_stocks[i+1][symbol_col_idx] = f"'{sym_val}"
                     
                 value_twd = price * shares * fx
                 dividend_twd = value_twd * yield_pct
@@ -267,18 +289,31 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                 display_name = f"{symbol} {stock_name}" if symbol != stock_name else symbol
                 raw_data.append([market, broker, display_name, shares, price, fx, value_twd, yield_pct, dividend_twd])
 
-            # 🌟 執行單次批次上傳，將最新股價寫回 Google 試算表
-            try:
-                sheet_stocks.update(values=raw_stocks, range_name="A1")
-            except Exception as e:
-                st.warning(f"股價同步寫入試算表失敗: {e}")
+            try: sheet_stocks.update(values=raw_stocks, range_name="A1")
+            except Exception as e: st.warning(f"股價同步寫入試算表失敗: {e}")
 
+            # 基金
             for _, row in df_funds.iterrows():
                 broker, fund_name, fund_value, yield_pct = str(row.get("券商/平台", "未指定")), row["基金名稱"], float(row["目前總額(TWD)"]), float(row.get("預估殖利率(%)", 0))/100.0
                 dividend_twd = fund_value * yield_pct
                 total_assets += fund_value
                 market_subtotals["基金"] += fund_value
                 raw_data.append(["基金", broker, fund_name, "-", "-", "-", fund_value, yield_pct, dividend_twd])
+
+            # 現金 (從您原本的試算表抓取)
+            for _, row in df_cash.iterrows():
+                acct_name = str(row.get("帳戶/機構名稱", "未指定"))
+                currency = str(row.get("幣別 (如 TWD, USD, JPY)", "TWD")).upper().strip()
+                balance = float(row.get("目前餘額(原幣)", 0))
+                
+                fx = 1.0
+                if currency == "USD": fx = usd_twd
+                elif currency == "JPY": fx = jpy_twd
+                    
+                value_twd = balance * fx
+                total_assets += value_twd
+                market_subtotals["現金"] += value_twd
+                raw_data.append(["現金", acct_name, f"{currency} 現金", "-", balance, fx, value_twd, 0.0, 0.0])
 
             df_raw = pd.DataFrame(raw_data, columns=["市場", "券商", "標的名稱", "股數", "現價", "匯率", "市值(TWD)", "殖利率", "年配息(TWD)"])
             total_annual_dividend = df_raw["年配息(TWD)"].sum()
@@ -293,11 +328,11 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             try:
                 hist_records = sheet_history.get_all_values()
                 new_row_data = [today_str, float(total_assets), float(total_liabilities), float(net_worth), float(total_annual_dividend), 
-                                float(market_subtotals["台股"]), float(market_subtotals["美股"]), float(market_subtotals["日股"]), float(market_subtotals["基金"])]
+                                float(market_subtotals["台股"]), float(market_subtotals["美股"]), float(market_subtotals["日股"]), float(market_subtotals["基金"]), float(market_subtotals["現金"])]
                                 
                 if len(hist_records) > 1 and hist_records[-1][0] == today_str:
                     row_idx = len(hist_records)
-                    sheet_history.update(values=[new_row_data], range_name=f"A{row_idx}:I{row_idx}")
+                    sheet_history.update(values=[new_row_data], range_name=f"A{row_idx}:J{row_idx}")
                 else:
                     sheet_history.append_row(new_row_data)
             except Exception as e:
@@ -324,7 +359,7 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             with col_pie2:
                 broker_summary = df_raw.groupby("券商").agg({"市值(TWD)": "sum"}).reset_index()
                 if not broker_summary.empty and broker_summary["市值(TWD)"].sum() > 0:
-                    fig_broker = px.pie(broker_summary, values='市值(TWD)', names='券商', hole=0.4, title="依券商/平台")
+                    fig_broker = px.pie(broker_summary, values='市值(TWD)', names='券商', hole=0.4, title="依帳戶/券商/平台")
                     fig_broker.update_layout(margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='rgba(0,0,0,0)')
                     st.plotly_chart(fig_broker, use_container_width=True)
 
@@ -346,7 +381,7 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             st.markdown("---")
 
             st.subheader("📋 各市場專屬儀表板與明細清單")
-            tab_tw, tab_us, tab_jp, tab_fund, tab_liab = st.tabs(["🇹🇼 台股", "🇺🇸 美股", "🇯🇵 日股", "📈 基金", "📉 負債"])
+            tab_tw, tab_us, tab_jp, tab_fund, tab_cash, tab_liab = st.tabs(["🇹🇼 台股", "🇺🇸 美股", "🇯🇵 日股", "📈 基金", "💵 現金", "📉 負債"])
             
             def render_market_tab(market_name, df_market, target_goal, hist_col):
                 if df_market.empty:
@@ -365,14 +400,15 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                 with col_p1:
                     df_plot_stock = df_market.groupby("標的名稱")["市值(TWD)"].sum().reset_index()
                     if not df_plot_stock.empty:
-                        fig_pie_stock = px.pie(df_plot_stock, values='市值(TWD)', names='標的名稱', title=f"{market_name} 各股資金佔比", hole=0.3)
+                        pie_title = f"{market_name} 各幣別佔比" if market_name == "現金" else f"{market_name} 各股資金佔比"
+                        fig_pie_stock = px.pie(df_plot_stock, values='市值(TWD)', names='標的名稱', title=pie_title, hole=0.3)
                         fig_pie_stock.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
                         st.plotly_chart(fig_pie_stock, use_container_width=True)
                         
                 with col_p2:
                     df_plot_broker = df_market.groupby("券商")["市值(TWD)"].sum().reset_index()
                     if not df_plot_broker.empty:
-                        broker_title = "各平台資金佔比" if market_name == "基金" else "各券商資金佔比"
+                        broker_title = "各機構資金佔比" if market_name == "現金" else ("各平台資金佔比" if market_name == "基金" else "各券商資金佔比")
                         fig_pie_broker = px.pie(df_plot_broker, values='市值(TWD)', names='券商', title=f"{market_name} {broker_title}", hole=0.3)
                         fig_pie_broker.update_layout(margin=dict(t=30, b=0, l=0, r=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
                         st.plotly_chart(fig_pie_broker, use_container_width=True)
@@ -385,7 +421,7 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
                 df_display = df_market.copy()
                 df_display["現價"] = df_display["現價"].apply(lambda x: f"{float(x):.2f}" if x != "-" else x)
                 df_display["市值(TWD)"] = df_display["市值(TWD)"].map(lambda x: f"{x:,.0f}")
-                df_display["殖利率"] = df_display["殖利率"].map(lambda x: f"{x*100:.2f}%")
+                df_display["殖利率"] = df_display["殖利率"].map(lambda x: f"{x*100:.2f}%" if pd.notna(x) else "0.00%")
                 df_display["年配息(TWD)"] = df_display["年配息(TWD)"].map(lambda x: f"{x:,.0f}")
                 st.dataframe(df_display, use_container_width=True)
 
@@ -393,6 +429,7 @@ if st.button("🔄 同步結算資產與負債總額", type="primary", use_conta
             with tab_us: render_market_tab("美股", df_raw[df_raw["市場"] == "美股"], fire_goal_us, "美股總計")
             with tab_jp: render_market_tab("日股", df_raw[df_raw["市場"] == "日股"], fire_goal_jp, "日股總計")
             with tab_fund: render_market_tab("基金", df_raw[df_raw["市場"] == "基金"], fire_goal_fund, "基金總計")
+            with tab_cash: render_market_tab("現金", df_raw[df_raw["市場"] == "現金"], fire_goal_cash, "現金總計")
             
             with tab_liab:
                 st.info("📉 您的負債清單")
